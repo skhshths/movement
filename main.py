@@ -37,10 +37,6 @@ from world import PALETTES, WORLD_BOTTOM, WORLD_TOP, WORLD_W, World, mix, palett
 
 WEB = sys.platform == "emscripten"
 START_SIZE = (1280, 720)
-START_PIXELS = 1600 * 900    # browser: draw at most this many pixels at first
-MIN_WIDTH = 1200             # never draw narrower than this (the editor needs it)
-SLOW_MS = 12.0               # browser: drop resolution if a frame's work takes longer
-FAST_MS = 9.0                # ...and raise it again while there's room
 
 MINIMAP_R = 100              # radius of the round minimap
 MINIMAP_SCALE = 30           # world px per minimap px
@@ -93,9 +89,7 @@ class App:
         self.name = net.load("name", "") or ""
         self.running = True
         self.alpha = 1.0
-        self.scale = None              # browser render scale, see adapt_scale
-        self.scale_fixed = False
-        self.work = 0.0                # smoothed ms of step + draw + flip per frame
+        self.scale = None              # browser render scale, see read_scale
         self.perf = None               # F3 frame timing
         self.frame = 0
         self.story = None            # kept so leaving the story doesn't lose progress
@@ -112,15 +106,14 @@ class App:
 
     def sync_size(self):
         if WEB:
-            # match the canvas to the browser window so there are no bars.
-            # The game may draw at a lower resolution than the window (the
-            # browser stretches it on the GPU) when frames take too long.
+            # match the canvas to the browser window so there are no bars
             import platform
             w = int(platform.window.innerWidth)
             h = int(platform.window.innerHeight)
             if w <= 200 or h <= 200:
                 return
-            self.adapt_scale(w, h)
+            if self.scale is None:
+                self.read_scale()
             size = (round(w * self.scale), round(h * self.scale))
             if size != self.screen.get_size():
                 self.screen = pygame.display.set_mode(size)
@@ -129,33 +122,18 @@ class App:
         else:
             self.screen = pygame.display.get_surface()
 
-    def adapt_scale(self, w, h):
-        lowest = min(1.0, max(MIN_WIDTH / w, 0.5))
-        if self.scale is None:
-            # start no bigger than about 1600x900 worth of pixels, or what
-            # the page asks for with ?scale=0.7 (which also stops adapting)
-            self.scale = max(lowest, min(1.0, math.sqrt(START_PIXELS / (w * h))))
-            self.scale_t = time.perf_counter()
-            import platform
-            query = str(platform.window.location.search)
-            if "scale=" in query:
-                try:
-                    self.scale = max(0.3, min(1.0, float(query.split("scale=")[1].split("&")[0])))
-                    self.scale_fixed = True
-                except ValueError:
-                    pass
-            return
-        if self.scale_fixed:
-            return
-        now = time.perf_counter()
-        if now - self.scale_t < 2.0:
-            return
-        self.scale_t = now
-        work = self.work
-        if work > SLOW_MS and self.scale > lowest:
-            self.scale = max(lowest, self.scale - 0.1)
-        elif work * ((self.scale + 0.1) / self.scale) ** 2 < FAST_MS and self.scale < 1.0:
-            self.scale = min(1.0, self.scale + 0.1)
+    def read_scale(self):
+        """Drawing resolution is always the window's, unless the address
+        asks for less with ?scale=0.7 (the browser then stretches it). It
+        never changes while you play."""
+        self.scale = 1.0
+        import platform
+        query = str(platform.window.location.search)
+        if "scale=" in query:
+            try:
+                self.scale = max(0.3, min(1.0, float(query.split("scale=")[1].split("&")[0])))
+            except ValueError:
+                pass
 
     async def run(self):
         acc = 0.0
@@ -196,7 +174,6 @@ class App:
                 self.draw_perf(t1 - t0, t2 - t1)
             pygame.display.flip()
             t3 = time.perf_counter()
-            self.work += ((t3 - t0) * 1000 - self.work) * 0.05
             if self.perf is not None:
                 self.perf["flip"] += ((t3 - t2) * 1000 - self.perf["flip"]) * 0.05
             await asyncio.sleep(0)   # hands control to the browser each frame

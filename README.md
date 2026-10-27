@@ -58,8 +58,8 @@ nothing to set up by hand.
 | Esc | back to the menu |
 | F3 | frame rate and timing |
 
-In the browser the game lowers its drawing resolution by itself if frames get
-slow. Add `?scale=0.7` (0.3 to 1) to the address to pick a resolution yourself.
+On a slow computer, add `?scale=0.7` (0.3 to 1) to the address to draw at a
+lower resolution; the browser stretches it to fill the window.
 
 The full list of maneuvers is in the docstring at the top of `player.py`.
 
