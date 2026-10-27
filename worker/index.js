@@ -20,6 +20,10 @@ const MAX_DATA = 200_000;
 const MAX_OBJECTS = 5000;
 const PAGE = 40;
 const PUBLISH_LIMIT = 20;         // per address per hour
+const COORD_MAX = 1_000_000;      // must match levels.py
+const SIZE_MAX = 10_000;
+const KINDS = new Set(["wall", "kill", "bounce", "boost", "ice", "oneway", "crumble", "blinkA",
+  "blinkB", "gate", "saw", "orb", "grav", "wind", "nodash", "check", "start", "finish"]);
 
 const HEADERS = {
   "content-type": "application/json",
@@ -49,8 +53,11 @@ function checkLevel(data) {
   if (!Array.isArray(objs) || objs.length > MAX_OBJECTS) return "bad object list";
   let starts = 0, finishes = 0;
   for (const o of objs) {
-    if (!Array.isArray(o) || o.length !== 7 || typeof o[0] !== "string" ||
+    if (!Array.isArray(o) || o.length !== 7 || !KINDS.has(o[0]) ||
         !o.slice(1).every(Number.isFinite)) return "bad object";
+    const [, x, y, w, h] = o;
+    if (Math.abs(x) > COORD_MAX || Math.abs(y) > COORD_MAX ||
+        w < 1 || h < 1 || w > SIZE_MAX || h > SIZE_MAX) return "object out of range";
     if (o[0] === "start") starts++;
     if (o[0] === "finish") finishes++;
   }

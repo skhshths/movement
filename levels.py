@@ -34,6 +34,8 @@ ORB_BACK = 2.0
 FALL_MARGIN = 1200        # fall this far below the lowest block and you die
 
 CELL = 256
+COORD_MAX = 1_000_000     # level files are untrusted: keep everything in range
+SIZE_MAX = 10_000
 
 
 class Kind:
@@ -135,6 +137,9 @@ def load(text):
         if (isinstance(o, list) and len(o) == 7 and o[0] in KINDS
                 and all(isinstance(v, (int, float)) for v in o[1:])):
             t, x, y, w, h, d, p = o
+            if not (abs(x) <= COORD_MAX and abs(y) <= COORD_MAX
+                    and 1 <= w <= SIZE_MAX and 1 <= h <= SIZE_MAX):
+                continue
             objs.append(Obj(t, x, y, max(1, w), max(1, h), int(d) % 4,
                             max(1, min(5, int(p)))))
     theme = data.get("theme")
@@ -458,6 +463,14 @@ def _fill_alpha(s, colour, rect, alpha):
     s.blit(surf, rect)
 
 
+def _span(lo, hi, step, vis_lo, vis_hi):
+    """range(lo, hi, step) limited to what's on screen, keeping the pattern
+    lined up with the block."""
+    if lo < vis_lo:
+        lo += (vis_lo - lo) // step * step
+    return range(int(lo), int(min(hi, vis_hi + step)), step)
+
+
 def _chevrons(s, colour, r, d, clock, n=None):
     """Arrows pointing direction d, drifting along it."""
     dx, dy = DIRS[d]
@@ -466,6 +479,7 @@ def _chevrons(s, colour, r, d, clock, n=None):
     gap = max(size * 2.2, 14)
     count = n or max(1, int(length // gap))
     off = (clock * 40) % gap if n is None else 0
+    view = s.get_rect().inflate(size * 4, size * 4)
     for k in range(count):
         t = (k * gap + off + gap / 2) % max(length, 1)
         if dx:
@@ -474,6 +488,8 @@ def _chevrons(s, colour, r, d, clock, n=None):
         else:
             cx = r.centerx
             cy = r.top + (t if dy > 0 else length - t)
+        if not view.collidepoint(cx, cy):
+            continue
         tip = (cx + dx * size, cy + dy * size)
         a = (cx - dx * size * 0.2 + dy * size, cy - dy * size * 0.2 + dx * size)
         b = (cx - dx * size * 0.2 - dy * size, cy - dy * size * 0.2 - dx * size)
@@ -518,7 +534,7 @@ def draw_objects(s, cam, zoom, objs, theme, clock, run=None, hitboxes=False,
             elif t == "kill":
                 pygame.draw.rect(s, (120, 20, 40), cl)
                 step = max(6, int(16 * zoom))
-                for k in range(rr.left, rr.right, step):
+                for k in _span(rr.left, rr.right, step, screen.left, screen.right):
                     a, b = (k, rr.top), (min(k + step // 2, rr.right), rr.top + min(step // 2, rr.h))
                     pygame.draw.line(s, col, a, b, 2)
                     pygame.draw.line(s, col, b, (min(k + step, rr.right), rr.top), 2)
@@ -530,12 +546,12 @@ def draw_objects(s, cam, zoom, objs, theme, clock, run=None, hitboxes=False,
             elif t == "ice":
                 pygame.draw.rect(s, col, cl)
                 pygame.draw.rect(s, (255, 255, 255), (cl.x, rr.top, cl.w, max(1, int(4 * zoom))))
-                for k in range(rr.left + 6, rr.right - 6, max(12, int(40 * zoom))):
+                for k in _span(rr.left + 6, rr.right - 6, max(12, int(40 * zoom)), screen.left - 40, screen.right):
                     pygame.draw.line(s, (140, 200, 235), (k, rr.top + 8 * zoom),
                                      (k + 10 * zoom, rr.bottom - 4 * zoom), 2)
             elif t == "oneway":
                 pygame.draw.rect(s, col, (cl.x, rr.top, cl.w, max(2, int(5 * zoom))))
-                for k in range(rr.left, rr.right, max(6, int(12 * zoom))):
+                for k in _span(rr.left, rr.right, max(6, int(12 * zoom)), screen.left, screen.right):
                     pygame.draw.line(s, shade(col, 0.6), (k, rr.top + 4 * zoom),
                                      (k, rr.bottom), 1)
             elif t == "crumble":
@@ -594,7 +610,9 @@ def draw_objects(s, cam, zoom, objs, theme, clock, run=None, hitboxes=False,
                         pygame.draw.circle(s, col, (px, py), max(2, 3 * zoom))
                 else:
                     step = max(10, int(24 * zoom))
-                    for k in range(-rr.h, rr.w, step):
+                    for k in _span(-rr.h, rr.w, step,
+                                   screen.left - screen.bottom - rr.left + rr.top,
+                                   screen.right - screen.top - rr.left + rr.top):
                         a = (rr.left + max(k, 0), rr.top + max(-k, 0))
                         L = min(rr.w - max(k, 0), rr.h - max(-k, 0))
                         pygame.draw.line(s, shade(col, 0.7), a, (a[0] + L, a[1] + L), 1)
@@ -614,8 +632,8 @@ def draw_objects(s, cam, zoom, objs, theme, clock, run=None, hitboxes=False,
                         s.blit(img, img.get_rect(center=rr.center))
             elif t == "finish":
                 sq = max(4, int(8 * zoom))
-                for yy in range(rr.top, rr.bottom, sq):
-                    for xx in range(rr.left, rr.right, sq):
+                for yy in _span(rr.top, rr.bottom, sq, screen.top, screen.bottom):
+                    for xx in _span(rr.left, rr.right, sq, screen.left, screen.right):
                         dark = ((xx - rr.left) // sq + (yy - rr.top) // sq) % 2
                         pygame.draw.rect(s, INK if dark else (255, 255, 255),
                                          (xx, yy, min(sq, rr.right - xx), min(sq, rr.bottom - yy)))

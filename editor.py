@@ -28,7 +28,7 @@ import math
 import pygame
 
 import net
-from levels import KINDS, ORDER, Obj, Run, draw_objects, dump, level_info_line, load
+from levels import KINDS, ORDER, SIZE_MAX, Obj, Run, draw_objects, dump, level_info_line, load
 from player import DASH_SPEED, DASH_TIME, GRAVITY, JUMP_V, RUN_SPEED, Input, Player
 from scenes import Menu, Play, draw_level_hud, hovered
 from ui import (DIM, GOLD, GREEN, INK, PANEL, RED, TEXT, TextBox, button, draw_panel, draw_sky,
@@ -456,7 +456,7 @@ class Editor:
         if (x0, y0) == (x1, y1):
             return pygame.Rect(x0, y0, *KINDS[self.tool].size)   # a click: default size
         g = self.grid
-        return pygame.Rect(x0, y0, max(g, x1 - x0), max(g, y1 - y0))
+        return pygame.Rect(x0, y0, min(SIZE_MAX, max(g, x1 - x0)), min(SIZE_MAX, max(g, y1 - y0)))
 
     def drag_update(self):
         d = self.drag
@@ -470,8 +470,8 @@ class Editor:
                 self.objs[j].x, self.objs[j].y = x + dx, y + dy
         elif d["mode"] == "resize":
             o = self.objs[d["i"]]
-            o.w = max(1, self.snap(wpos.x) - o.x)
-            o.h = max(1, self.snap(wpos.y) - o.y)
+            o.w = min(SIZE_MAX, max(1, self.snap(wpos.x) - o.x))
+            o.h = min(SIZE_MAX, max(1, self.snap(wpos.y) - o.y))
 
     def drag_end(self):
         d = self.drag
