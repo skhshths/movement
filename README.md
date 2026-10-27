@@ -7,14 +7,15 @@ stats in the bottom-right corner.
 **Play in the browser:** https://a.oliverbar.net
 
 The web version is the same Python code, packaged for the browser with
-[pygbag](https://github.com/pygame-web/pygbag). Cloudflare Pages rebuilds and
-publishes it on every push to `main`, with these build settings:
+[pygbag](https://github.com/pygame-web/pygbag). A Cloudflare Worker rebuilds
+and publishes it on every push to `main`:
 
 | Setting | Value |
 |---|---|
 | Build command | `pip install pygbag==0.9.3 && python -m pygbag --build .` |
-| Build output directory | `build/web` |
-| Environment variable | `PYTHON_VERSION` = `3.12` |
+| Deploy command | `npx wrangler deploy` |
+
+`wrangler.jsonc` tells the deploy to serve `build/web` as static files.
 
 ## Controls
 
