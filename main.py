@@ -1,18 +1,22 @@
 """
 =============================================================================
-  VELOCITY  —  a high-speed courier game (pygame-ce)
+  VELOCITY  -  a high-speed movement game (pygame-ce)
 =============================================================================
-The Static has knocked out every beacon in the Reach. As a courier you carry
-deliveries between six towns across a huge, tall world, chaining speed tech
-to get there fast. A round minimap and all your stats sit in the
-bottom-right corner.
+Opens on a menu: the story mode, a level creator, playing a level by its ID
+and a list of every verified level. Levels are shared online through the
+level server in worker/, so anyone can play what anyone builds.
 
 Runs on desktop and in the browser (via pygbag). In the browser the game
 resizes itself to fill the whole window.
 
-  main.py     game loop, rendering, HUD, dialogue
+  main.py     app loop and the story mode
+  scenes.py   menu, level list, play-by-ID and playing a level
+  editor.py   the level creator
+  levels.py   level blocks, level physics and drawing
+  net.py      level server requests and local saves
+  ui.py       shared colours, fonts, sky and widgets
   player.py   input and every movement maneuver (see its docstring)
-  world.py    world generation, towns and colour palettes
+  world.py    story world generation, towns and colour palettes
   quests.py   story, characters, main quest and delivery jobs
 """
 import asyncio
@@ -23,10 +27,12 @@ import sys
 
 import pygame
 
+import net
 from player import DT, FPS, MAX_DASHES, Input, Player
 from quests import NPCS, Quests
-from world import (PALETTES, WORLD_BOTTOM, WORLD_TOP, WORLD_W, World, mix,
-                   palette_at, shade)
+from ui import (DIM, GOLD, INK, PANEL, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, TEXT,
+                Fonts, draw_panel, draw_sky, wrap)
+from world import PALETTES, WORLD_BOTTOM, WORLD_TOP, WORLD_W, World, mix, palette_at, shade
 
 WEB = sys.platform == "emscripten"
 START_SIZE = (1280, 720)
@@ -34,36 +40,6 @@ START_SIZE = (1280, 720)
 MINIMAP_R = 100              # radius of the round minimap
 MINIMAP_SCALE = 30           # world px per minimap px
 TALK_RANGE = 90
-
-# ---------------------------------------------------------------- colours --
-INK = (12, 10, 24)
-PANEL = (18, 16, 34)
-TEXT = (238, 236, 248)
-DIM = (150, 146, 176)
-GOLD = (255, 214, 90)
-PLAYER_READY = (80, 230, 255)
-PLAYER_EMPTY = (255, 140, 70)
-PLAYER_DASH = (255, 255, 255)
-
-
-def wrap(font, text, width):
-    lines, line = [], ""
-    for word in text.split():
-        test = f"{line} {word}".strip()
-        if font.size(test)[0] <= width or not line:
-            line = test
-        else:
-            lines.append(line)
-            line = word
-    if line:
-        lines.append(line)
-    return lines
-
-
-def ridge(x, seed, scale):
-    """Smooth hill height for the parallax mountain layers."""
-    return (math.sin(x * 0.0021 + seed) * 0.5 + math.sin(x * 0.0057 + seed * 2.3) * 0.3
-            + math.sin(x * 0.013 + seed * 4.1) * 0.2) * scale
 
 
 class Dialogue:
@@ -90,7 +66,9 @@ class Dialogue:
             self.shown = 0.0
 
 
-class Game:
+class App:
+    """Owns the window and the loop, and runs whichever scene is current."""
+
     def __init__(self):
         pygame.init()
         flags = 0 if WEB else pygame.RESIZABLE
@@ -105,11 +83,74 @@ class Game:
             import platform
             platform.document.body.style.background = "#0c0a18"
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 24)
-        self.mid = pygame.font.Font(None, 30)
-        self.big = pygame.font.Font(None, 52)
-        self.huge = pygame.font.Font(None, 84)
+        self.fonts = Fonts()
         self.inp = Input()
+        self.name = net.load("name", "") or ""
+        self.running = True
+        self.frame = 0
+        self.story = None            # kept so leaving the story doesn't lose progress
+        import scenes
+        self.scene = scenes.Menu(self)
+
+    def go(self, scene):
+        self.scene = scene
+
+    def play_story(self):
+        if self.story is None:
+            self.story = Game(self)
+        self.go(self.story)
+
+    def sync_size(self):
+        if WEB:
+            # match the canvas to the browser window so there are no bars
+            import platform
+            w = int(platform.window.innerWidth)
+            h = int(platform.window.innerHeight)
+            if w > 200 and h > 200 and (w, h) != self.screen.get_size():
+                self.screen = pygame.display.set_mode((w, h))
+                platform.window.config.gui_divider = 1
+                platform.window.window_resize()
+        else:
+            self.screen = pygame.display.get_surface()
+
+    async def run(self):
+        acc = 0.0
+        while self.running:
+            acc += min(self.clock.tick(FPS) / 1000, 0.1)
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT:
+                    return
+                if e.type == pygame.KEYDOWN:
+                    if e.key in (pygame.K_SPACE, pygame.K_k):
+                        self.inp.jump_pressed = True
+                    if e.key in (pygame.K_LSHIFT, pygame.K_RSHIFT, pygame.K_j):
+                        self.inp.dash_pressed = True
+                    if e.key in (pygame.K_e, pygame.K_RETURN):
+                        self.inp.interact_pressed = True
+                self.scene.event(e)
+            self.inp.poll()
+            net.poll()
+            if self.frame % 20 == 0:
+                self.sync_size()
+            self.frame += 1
+            while acc >= DT:
+                self.scene.step(DT)
+                self.inp.jump_pressed = self.inp.dash_pressed = False
+                self.inp.interact_pressed = False
+                acc -= DT
+            self.scene.draw(self.screen)
+            pygame.display.flip()
+            await asyncio.sleep(0)   # hands control to the browser each frame
+
+
+class Game:
+    """Story mode: the open world, towns, quests and deliveries."""
+
+    def __init__(self, app):
+        self.app = app
+        f = app.fonts
+        self.font, self.mid, self.big, self.huge = f.font, f.mid, f.big, f.huge
+        self.inp = app.inp
         self.world = World()
         self.quests = Quests(self.world.towns)
         self.player = Player(self.world.spawn)
@@ -125,7 +166,6 @@ class Game:
         self.was_ground = True
         self.was_dashing = False
         self.prev_vy = 0.0
-        self.frame = 0
         self.minimap = self.render_minimap()
         self.npcs = {k: self.quests.npc_pos(k) for k in NPCS}
 
@@ -154,49 +194,17 @@ class Game:
         self.player.reset()
         self.trail.clear()
 
-    def sync_size(self):
-        if WEB:
-            # match the canvas to the browser window so there are no bars
-            import platform
-            w = int(platform.window.innerWidth)
-            h = int(platform.window.innerHeight)
-            if w > 200 and h > 200 and (w, h) != self.screen.get_size():
-                self.screen = pygame.display.set_mode((w, h))
-                platform.window.config.gui_divider = 1
-                platform.window.window_resize()
-        else:
-            self.screen = pygame.display.get_surface()
+    @property
+    def screen(self):
+        return self.app.screen
 
-    # -- loop -----------------------------------------------------------------
-    async def run(self):
-        acc = 0.0
-        while True:
-            acc += min(self.clock.tick(FPS) / 1000, 0.1)
-            for e in pygame.event.get():
-                if e.type == pygame.QUIT:
-                    return
-                if e.type == pygame.KEYDOWN:
-                    if e.key == pygame.K_ESCAPE and not WEB:
-                        return
-                    if e.key == pygame.K_r and not self.dialogue:
-                        self.respawn()
-                    if e.key in (pygame.K_SPACE, pygame.K_k):
-                        self.inp.jump_pressed = True
-                    if e.key in (pygame.K_LSHIFT, pygame.K_RSHIFT, pygame.K_j):
-                        self.inp.dash_pressed = True
-                    if e.key in (pygame.K_e, pygame.K_RETURN):
-                        self.inp.interact_pressed = True
-            self.inp.poll()
-            if self.frame % 20 == 0:
-                self.sync_size()
-            self.frame += 1
-            while acc >= DT:
-                self.step(DT)
-                self.inp.jump_pressed = self.inp.dash_pressed = False
-                self.inp.interact_pressed = False
-                acc -= DT
-            self.draw()
-            await asyncio.sleep(0)   # hands control to the browser each frame
+    def event(self, e):
+        if e.type == pygame.KEYDOWN:
+            if e.key == pygame.K_ESCAPE:
+                import scenes
+                self.app.go(scenes.Menu(self.app))
+            elif e.key == pygame.K_r and not self.dialogue:
+                self.respawn()
 
     def step(self, dt):
         self.time += dt
@@ -298,8 +306,7 @@ class Game:
             return PLAYER_DASH
         return PLAYER_READY if p.dashes else PLAYER_EMPTY
 
-    def draw(self):
-        s = self.screen
+    def draw(self, s):
         p = self.player
         shake = pygame.Vector2()
         if p.shake > 0:
@@ -308,7 +315,7 @@ class Game:
         cam = self.cam + shake
         pal = palette_at(cam.x + s.get_width() / 2)
 
-        self.draw_sky(s, cam, pal)
+        draw_sky(s, cam, pal)
         self.draw_world(s, cam)
         self.draw_npcs(s, cam)
 
@@ -335,56 +342,6 @@ class Game:
             self.draw_dialogue(s)
         self.draw_hud(s)
         self.draw_banner(s)
-        pygame.display.flip()
-
-    def draw_sky(self, s, cam, pal):
-        w, h = s.get_size()
-        # altitude gradient: low = warm horizon colour, high = deep sky
-        # with a saturated, accent-tinted middle so the climb stays colourful
-        bands = 14
-        mid = mix(pal["sky_top"], pal["accent"], 0.45)
-        for i in range(bands):
-            y0 = h * i // bands
-            wy = cam.y + y0 + h / bands / 2
-            t = max(0, min(1, (1200 - wy) / (1200 - WORLD_TOP)))
-            if t < 0.4:
-                col = mix(pal["sky_bot"], mid, t / 0.4)
-            else:
-                col = mix(mid, pal["sky_top"], (t - 0.4) / 0.6)
-            pygame.draw.rect(s, col, (0, y0, w, h // bands + 2))
-        # stars come out as you climb
-        alt = max(0, min(1, (-cam.y - 1500) / 4000))
-        if alt > 0:
-            star = mix(pal["sky_top"], (255, 255, 255), alt * 0.8)
-            span = w + 200
-            for i in range(70):
-                sx = ((i * 977 + 131) - cam.x * 0.05) % span
-                sy = (i * 571 + 53) % h
-                pygame.draw.rect(s, star, (sx, sy, 2, 2))
-        # clouds
-        cloud = mix(pal["sky_bot"], (255, 255, 255), 0.35)
-        tile = 900
-        cx0 = cam.x * 0.2
-        for i in range(-1, w // tile + 3):
-            k = math.floor(cx0 / tile) + i
-            rng = random.Random(k * 7919)
-            cx = k * tile - cx0 + rng.randint(0, 400)
-            cy = rng.randint(40, int(h * 0.5)) - (cam.y - 200) * 0.08
-            for j in range(3):
-                pygame.draw.ellipse(s, cloud, (cx + j * 50, cy - (j % 2) * 18, 120, 44))
-        # two parallax mountain layers
-        for par, seed, scale, base, col in ((0.12, 1.0, 180, 0.62, pal["far"]),
-                                            (0.3, 5.0, 240, 0.78, pal["near"])):
-            horizon = h * base - (cam.y - 600) * par
-            if horizon - 2 * scale > h:
-                continue
-            pts = [(0, h)]
-            for sx in range(0, w + 48, 48):
-                pts.append((sx, horizon - ridge(cam.x * par + sx, seed, scale) - scale))
-            pts.append((w, h))
-            pygame.draw.polygon(s, col, pts)
-            if horizon < h:
-                pygame.draw.rect(s, col, (0, max(0, horizon), w, h))
 
     def draw_world(self, s, cam):
         w, h = s.get_size()
@@ -510,18 +467,13 @@ class Game:
         img = self.font.render(f"{dist / 1000:.1f}k", True, col)
         s.blit(img, img.get_rect(center=(ex - math.cos(a) * 26, ey - math.sin(a) * 26)))
 
-    def draw_panel(self, s, rect, alpha=200):
-        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
-        pygame.draw.rect(panel, (*PANEL, alpha), panel.get_rect(), border_radius=12)
-        s.blit(panel, rect)
-
     def draw_dialogue(self, s):
         w, h = s.get_size()
         d = self.dialogue
         speaker, text = d.lines[d.i]
         right = w - 2 * MINIMAP_R - 300
         box = pygame.Rect(24, h - 196, max(360, min(820, right - 24)), 172)
-        self.draw_panel(s, box, 225)
+        draw_panel(s, box, 225)
         col = d.colors.get(speaker, GOLD)
         pygame.draw.rect(s, col, box, 3, border_radius=12)
         if speaker:
@@ -633,7 +585,7 @@ class Game:
                          DIM if left > 0 else PLAYER_EMPTY))
         ph = 20 + len(rows) * 22
         panel = pygame.Rect(w - pw - 24, cy - r - 24 - ph, pw, ph)
-        self.draw_panel(s, panel)
+        draw_panel(s, panel)
         for i, (text, col) in enumerate(rows):
             s.blit(self.font.render(text, True, col), (panel.x + 16, panel.y + 12 + i * 22))
 
@@ -648,7 +600,7 @@ class Game:
 
 
 async def main():
-    await Game().run()
+    await App().run()
     pygame.quit()
 
 

@@ -1,9 +1,18 @@
-// Cloudflare Workers deploy: serve the pygbag web build as static files.
+// Cloudflare Workers deploy: serves the pygbag web build as static files and
+// runs worker/index.js for the /api level server.
 // "name" must match the Worker's name in the Cloudflare dashboard.
 {
   "name": "movement",
+  "main": "worker/index.js",
   "compatibility_date": "2025-09-01",
   "assets": {
-    "directory": "./build/web"
-  }
+    "directory": "./build/web",
+    "binding": "ASSETS"
+  },
+  // every published level lives in one SQLite-backed Durable Object,
+  // created automatically on deploy
+  "durable_objects": {
+    "bindings": [{ "name": "LEVELS", "class_name": "LevelStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LevelStore"] }]
 }

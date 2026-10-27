@@ -153,6 +153,8 @@ SLAM_REACH = 240           # how far below you the floor can be
 
 SHAKE_DECAY = 30           # shake pixels lost per second
 
+ICE_ACCEL = 520            # how quickly you can change speed on ice
+
 
 
 def sign(v):
@@ -225,6 +227,12 @@ class Player:
         self.bhop_chain = 0
         self.events = []
         self.shake = 0.0
+        # set every step by level blocks and zones (see levels.py)
+        self.grav_mul = 1.0
+        self.push = 0.0            # sideways wind, px/s
+        self.lift = 0.0            # upward wind, px/s^2
+        self.on_ice = False
+        self.dash_lock = False
 
     @property
     def dashing(self):
@@ -302,7 +310,7 @@ class Player:
             dash_pressed = not self.slingshot_slam(solids)
 
         # dash start
-        if dash_pressed and self.dashes > 0 and not self.dashing:
+        if dash_pressed and self.dashes > 0 and not self.dashing and not self.dash_lock:
             dx, dy = mx, my
             if dx == 0 and dy == 0:
                 dx = self.facing
@@ -333,10 +341,11 @@ class Player:
                 self.regrab_t = REGRAB_TIME
         else:
             self.horizontal(dt, mx, inp, solids)
-            g = GRAVITY
+            g = GRAVITY * self.grav_mul
             if inp.down and not self.on_ground and self.vy > 0:
                 g *= FAST_FALL_MULT
-            self.vy = min(self.vy + g * dt, MAX_FALL * (1.4 if inp.down else 1))
+            self.vy = min(self.vy + (g - self.lift) * dt,
+                          MAX_FALL * (1.4 if inp.down else 1))
             if self.hugging and not inp.down and self.vy > 0:
                 self.vy = 0.0   # skim along the underside of a ceiling
             if self.wall and mx == self.wall and self.vy > WALL_SLIDE_MAX \
@@ -379,14 +388,17 @@ class Player:
             return
         if not self.on_ground and self.air_lock_t > 0:
             return                       # just kicked off a wall
-        target = mx * RUN_SPEED
-        if abs(self.vx) <= RUN_SPEED:
+        target = mx * RUN_SPEED + self.push
+        if self.on_ground and self.on_ice:
+            self.vx = approach(self.vx, target, ICE_ACCEL * dt)
+            return
+        if abs(self.vx - self.push) <= RUN_SPEED:
             # plain WASD movement is exact, on the ground and in the air:
             # full speed instantly, dead stop on release, instant turns
             self.vx = target
             return
         # faster than running means momentum from a move: it carries
-        d = sign(self.vx)
+        d = sign(self.vx - self.push)
         if self.on_ground:
             if mx and mx != d:
                 self.vx = approach(self.vx, target, GROUND_ACCEL * dt)
