@@ -16,7 +16,8 @@ KEYS
   R              rotate selection       [ ]     power down / up
   G              grid size              H       hitboxes
   P              player reference       T       theme
-  C / V          copy / paste           DEL     delete selection
+  CTRL+C / X     copy / cut             CTRL+V  paste (click to place copies)
+  CTRL+D         duplicate              DEL     delete selection
   CTRL+Z / Y     undo / redo            HOME    jump to the start
   ENTER          playtest               M       spawn at start / at cursor
   ESC            deselect, then leave
@@ -32,7 +33,7 @@ from levels import KINDS, ORDER, SIZE_MAX, Obj, Run, draw_objects, dump, level_i
 from player import DASH_SPEED, DASH_TIME, GRAVITY, JUMP_V, RUN_SPEED, Input, Player
 from scenes import Menu, Play, draw_level_hud, hovered, level_camera
 from ui import (DIM, GOLD, GREEN, INK, PANEL, RED, TEXT, TextBox, button, draw_panel, draw_sky,
-                fmt_time, shade_screen)
+                fmt_time, shade_screen, tint_rect)
 from world import PALETTES, mix
 
 GRIDS = [1, 2, 4, 8, 16, 32, 64]
@@ -76,6 +77,8 @@ class Editor:
         self.sel = set()
         self.undo_stack, self.redo_stack = [], []
         self.clip = []
+        self.pasting = False    # clipboard follows the mouse; click to place it
+        self.sel_buttons = {}   # copy / cut / duplicate / delete over the selection
         self.drag = None
         self.panning = False
         self.erasing = False
@@ -214,20 +217,53 @@ class Editor:
             self.objs[i].x += dx * self.grid
             self.objs[i].y += dy * self.grid
 
-    def paste(self):
-        if not self.clip:
+    def copy(self, cut=False):
+        if not self.sel:
             return
-        self.push_undo()
+        # the start is unique, so it never goes on the clipboard
+        self.clip = [self.objs[i].to_list() for i in sorted(self.sel) if self.objs[i].t != "start"]
+        n = len(self.clip)
+        plural = "" if n == 1 else "s"
+        self.toast = [f"{'Cut' if cut else 'Copied'} {n} block{plural}", GOLD, 0.0]
+        if cut:
+            self.delete(self.sel)
+
+    def start_paste(self):
+        if not self.clip:
+            self.toast = ["Nothing copied yet", RED, 0.0]
+            return
+        self.pasting = True
+        self.tool = "select"
+        self.sel.clear()
+
+    def paste_offset(self):
+        """Shift that puts the clipboard's top-left corner on the cursor."""
         wpos = self.to_world(self.mouse)
         x0 = min(o[1] for o in self.clip)
         y0 = min(o[2] for o in self.clip)
-        dx, dy = self.snap(wpos.x - x0), self.snap(wpos.y - y0)
+        return self.snap(wpos.x) - x0, self.snap(wpos.y) - y0
+
+    def paste(self):
+        self.push_undo()
+        dx, dy = self.paste_offset()
         start = len(self.objs)
         for o in self.clip:
-            if o[0] == "start":
-                continue
             self.objs.append(Obj(o[0], o[1] + dx, o[2] + dy, *o[3:]))
         self.sel = set(range(start, len(self.objs)))
+
+    def duplicate(self):
+        self.copy()
+        self.start_paste()
+
+    def selection_button(self, name):
+        if name == "copy":
+            self.copy()
+        elif name == "cut":
+            self.copy(cut=True)
+        elif name == "duplicate":
+            self.duplicate()
+        elif name == "delete":
+            self.delete(self.sel)
 
     def set_zoom(self, i, anchor):
         i = max(0, min(len(ZOOMS) - 1, i))
@@ -290,10 +326,20 @@ class Editor:
                 self.redo()
             elif ctrl and k == pygame.K_a:
                 self.sel = set(range(len(self.objs)))
+            elif ctrl and k == pygame.K_c:
+                self.copy()
+            elif ctrl and k == pygame.K_x:
+                self.copy(cut=True)
+            elif ctrl and k == pygame.K_v:
+                self.start_paste()
+            elif ctrl and k == pygame.K_d:
+                self.duplicate()
             elif ctrl:
                 return
             elif k == pygame.K_ESCAPE:
-                if self.sel:
+                if self.pasting:
+                    self.pasting = False
+                elif self.sel:
                     self.sel.clear()
                 elif self.tool != "select":
                     self.tool = "select"
@@ -303,6 +349,7 @@ class Editor:
                 n = 9 if k == pygame.K_0 else k - pygame.K_1
                 self.tool = ORDER[n]
                 self.sel.clear()
+                self.pasting = False
             elif k in (pygame.K_q, pygame.K_e):
                 i = TOOLS.index(self.tool) + (1 if k == pygame.K_e else -1)
                 self.tool = TOOLS[i % len(TOOLS)]
@@ -320,10 +367,12 @@ class Editor:
                 self.ghost = not self.ghost
             elif k == pygame.K_t:
                 self.cycle_theme()
-            elif k == pygame.K_c and self.sel:
-                self.clip = [self.objs[i].to_list() for i in sorted(self.sel)]
+            elif k == pygame.K_c:
+                self.copy()
+            elif k == pygame.K_x:
+                self.copy(cut=True)
             elif k == pygame.K_v:
-                self.paste()
+                self.start_paste()
             elif k in (pygame.K_DELETE, pygame.K_BACKSPACE):
                 self.delete(self.sel)
             elif k == pygame.K_LEFT:
@@ -360,6 +409,8 @@ class Editor:
             self.mouse = e.pos
             if e.button == 2:
                 self.panning = True
+            elif e.button == 3 and self.pasting:
+                self.pasting = False
             elif e.button == 3 and not self.in_ui(e.pos):
                 self.push_undo()
                 self.erasing = True
@@ -368,8 +419,13 @@ class Editor:
                     self.objs.pop(i)
                     self.sel.clear()
             elif e.button == 1:
-                if self.in_ui(e.pos):
+                hit = next((n for n, r in self.sel_buttons.items() if r.collidepoint(e.pos)), None)
+                if hit:
+                    self.selection_button(hit)
+                elif self.in_ui(e.pos):
                     self.click_ui(e.pos)
+                elif self.pasting:
+                    self.paste()           # keep placing copies until ESC
                 else:
                     self.drag_start(e.pos, shift)
         elif e.type == pygame.MOUSEBUTTONUP:
@@ -393,6 +449,7 @@ class Editor:
         if i is not None:
             self.tool = TOOLS[i]
             self.sel.clear()
+            self.pasting = False
             return
         for name, r in self.ui.items():
             if r.collidepoint(pos):
@@ -609,8 +666,12 @@ class Editor:
         draw_objects(s, self.cam, self.zoom, self.objs, self.theme, self.t, None,
                      self.hitboxes, f, self.sel)
         self.draw_handles(s)
-        if not self.in_ui(self.mouse) and not self.panning:
+        on_bar = any(r.collidepoint(self.mouse) for r in self.sel_buttons.values())
+        if self.pasting and not self.in_ui(self.mouse):
+            self.draw_paste_ghost(s, f)
+        elif not self.in_ui(self.mouse) and not self.panning and not on_bar:
             self.draw_cursor(s, f)
+        self.draw_selection_bar(s, f)
         self.draw_bars(s, f)
         if self.toast:
             img = f.mid.render(self.toast[0], True, self.toast[1])
@@ -653,9 +714,45 @@ class Editor:
                 pygame.draw.rect(s, GOLD, (hx - 5, hy - 5, 10, 10))
                 pygame.draw.rect(s, INK, (hx - 5, hy - 5, 10, 10), 1)
 
+    def draw_paste_ghost(self, s, f):
+        dx, dy = self.paste_offset()
+        z = self.zoom
+        for o in self.clip:
+            x, y = self.to_screen(o[1] + dx, o[2] + dy)
+            r = pygame.Rect(round(x), round(y), max(1, round(o[3] * z)), max(1, round(o[4] * z)))
+            tint_rect(s, r, KINDS[o[0]].colour, 110)
+            pygame.draw.rect(s, KINDS[o[0]].colour, r, 1)
+        n = len(self.clip)
+        plural = "" if n == 1 else "s"
+        self.label(s, f, f"click to place {n} block{plural}   ESC / right-click done",
+                   self.mouse, GOLD)
+
+    def draw_selection_bar(self, s, f):
+        """Copy / cut / duplicate / delete buttons just above the selection."""
+        self.sel_buttons = {}
+        if not self.sel or self.drag or self.pasting or self.tool != "select":
+            return
+        boxes = [self.objs[i].rect for i in self.sel]
+        x, y = self.to_screen(min(r.left for r in boxes), min(r.top for r in boxes))
+        w, h = s.get_size()
+        bw, bh, gap = 92, 28, 6
+        names = (("copy", "Copy"), ("cut", "Cut"), ("duplicate", "Duplicate"), ("delete", "Delete"))
+        total = len(names) * (bw + gap)
+        x = max(SIDEBAR_W + 8, min(x, w - total - 8))
+        y = max(TOPBAR_H + 8, min(y - bh - 10, h - BOTTOMBAR_H - bh - 40))
+        accent = PALETTES[self.theme]["accent"]
+        for k, (name, label) in enumerate(names):
+            r = pygame.Rect(x + k * (bw + gap), y, bw, bh)
+            colour = RED if name == "delete" else accent
+            self.sel_buttons[name] = button(s, f, r, label, r.collidepoint(self.mouse), colour, f.small)
+
     def label(self, s, f, text, pos, colour=TEXT):
         img = f.small.render(text, True, colour)
         r = img.get_rect(topleft=(pos[0] + 14, pos[1] + 14))
+        w, h = s.get_size()
+        if r.right > w - 8:             # keep it on screen
+            r.right = pos[0] - 14
+        r.bottom = min(r.bottom, h - BOTTOMBAR_H - 8)
         draw_panel(s, r.inflate(10, 6), 210, radius=6)
         s.blit(img, r)
 
@@ -788,9 +885,12 @@ class Editor:
         idxs = sorted(self.sel)
         hover = self.pick(wpos) if not self.in_ui(self.mouse) else None
         if len(idxs) == 1:
-            line = level_info_line(self.objs[idxs[0]]) + "    R rotate  [ ] power"
+            line = level_info_line(self.objs[idxs[0]]) + "    R rotate  [ ] power  CTRL+C copy"
+        elif self.pasting:
+            line = "Pasting: click to place copies, ESC or right-click when done"
         elif idxs:
-            line = f"{len(idxs)} selected    C copy  V paste  DEL delete  arrows nudge"
+            line = (f"{len(idxs)} selected    CTRL+C copy  CTRL+X cut  CTRL+D duplicate"
+                    "  DEL delete  arrows nudge")
         elif hover is not None:
             line = level_info_line(self.objs[hover])
         elif self.tool in KINDS:

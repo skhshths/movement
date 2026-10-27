@@ -135,6 +135,12 @@ def draw_sky(s, cam, pal):
 _panels = {}
 
 
+def pixel_rect(r, cam):
+    """A world rect on screen, rounded the same way as everything else so
+    the player lines up exactly with the blocks it touches."""
+    return pygame.Rect(round(r.x - cam.x), round(r.y - cam.y), round(r.w), round(r.h))
+
+
 def draw_panel(s, rect, alpha=200, colour=PANEL, radius=12):
     rect = pygame.Rect(rect)
     key = (rect.size, tuple(colour), alpha, radius)

@@ -13,7 +13,7 @@ import random
 import pygame
 
 from player import AIR_LOCK, MAX_DASHES, Player, sign
-from ui import GOLD, INK, tint_rect, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, RED, TEXT, fmt_time
+from ui import GOLD, INK, pixel_rect, tint_rect, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, RED, TEXT, fmt_time
 from world import PALETTES, mix, shade
 
 DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]
@@ -424,11 +424,11 @@ class Run:
         p = self.player
         bg = PALETTES[self.theme]["sky_bot"]
         for rect, col, age in self.trail:
-            tint_rect(s, rect.move(-cam.x, -cam.y), col, int(140 * (1 - age / 0.18)))
+            tint_rect(s, pixel_rect(rect, cam), col, int(140 * (1 - age / 0.18)))
         for x, y, vx, vy, life, mx, col, size in self.particles:
             pygame.draw.rect(s, mix(bg, col, life / mx),
                              (x - cam.x - size / 2, y - cam.y - size / 2, size, size))
-        pr = p.lerp_rect(alpha).move(-cam.x, -cam.y)
+        pr = pixel_rect(p.lerp_rect(alpha), cam)
         if hitboxes:
             pygame.draw.rect(s, self.player_colour(), pr)
             pygame.draw.rect(s, (60, 255, 120), pr, 1)

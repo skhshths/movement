@@ -379,7 +379,7 @@ def level_camera(s, run, alpha):
     if p.shake > 0:
         t = pygame.time.get_ticks()
         cam += (math.sin(t * 0.09) * p.shake, math.cos(t * 0.11) * p.shake)
-    return cam
+    return pygame.Vector2(round(cam.x), round(cam.y))    # whole pixels: no 1px seams
 
 
 class Play:

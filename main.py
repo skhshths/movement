@@ -32,7 +32,7 @@ import net
 from player import DT, FPS, MAX_DASHES, Input, Player
 from quests import NPCS, Quests
 from ui import (DIM, GOLD, INK, PANEL, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, TEXT,
-                Fonts, draw_panel, draw_sky, tint_rect, wrap)
+                Fonts, draw_panel, draw_sky, pixel_rect, tint_rect, wrap)
 from world import PALETTES, WORLD_BOTTOM, WORLD_TOP, WORLD_W, World, mix, palette_at, shade
 
 WEB = sys.platform == "emscripten"
@@ -393,6 +393,7 @@ class Game:
         w, h = s.get_size()
         drawn = p.lerp_rect(self.app.alpha)
         cam = pygame.Vector2(drawn.center) - (w / 2, h / 2) + shake
+        cam.update(round(cam.x), round(cam.y))    # whole pixels: no 1px seams
         pal = palette_at(cam.x + w / 2)
 
         draw_sky(s, cam, pal)
@@ -400,12 +401,12 @@ class Game:
         self.draw_npcs(s, cam)
 
         for rect, col, age in self.trail:
-            tint_rect(s, rect.move(-cam.x, -cam.y), col, int(140 * (1 - age / 0.18)))
+            tint_rect(s, pixel_rect(rect, cam), col, int(140 * (1 - age / 0.18)))
         for x, y, vx, vy, life, mx, col, size in self.particles:
             pygame.draw.rect(s, mix(pal["sky_bot"], col, life / mx),
                              (x - cam.x - size / 2, y - cam.y - size / 2, size, size))
 
-        pr = drawn.move(-cam.x, -cam.y)
+        pr = pixel_rect(drawn, cam)
         pygame.draw.rect(s, INK, pr.inflate(4, 4))
         pygame.draw.rect(s, self.player_colour(), pr)
         if self.quests.item or self.quests.job:      # parcel on your back
