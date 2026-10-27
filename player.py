@@ -29,7 +29,10 @@ MANEUVERS
   Wave Jump      Jump out of a wavedash without turning around: long, flat
                  jump that keeps the slide speed.
   Slide          Hold S while running fast. Very low friction. Let go of
-                 every direction on the ground and you stop dead.
+                 every direction and you stop dead, on the ground or in
+                 the air. Air control is exact: you move at full run speed
+                 the way you hold, and keep any extra speed while holding
+                 the way you're already flying.
   Long Jump      Jump out of a slide: +15% speed, low arc.
   Bunny Hop      Jump within a few frames of landing while above run speed:
                  no ground friction, small speed bonus, chains.
@@ -74,9 +77,9 @@ FAST_FALL_MULT = 1.7
 MAX_FALL = 1400
 RUN_SPEED = 420
 GROUND_ACCEL = 3200
-AIR_ACCEL = 1500
 FRICTION = 3000            # stopping with no input
-STOP_GRACE = 0.06          # no-input time on the ground before a dead stop
+STOP_GRACE = 0.06          # no-input time before a dead stop (ground or air)
+AIR_LOCK = 0.15            # air control ignored this long after a kick-off
 OVERSPEED_FRICTION = 900   # bleeding off speed above RUN_SPEED on the ground
 JUMP_V = 780
 COYOTE = 0.10
@@ -203,6 +206,7 @@ class Player:
         self.dashes = MAX_DASHES
         self.hanging = False
         self.idle_t = 0.0
+        self.air_lock_t = 0.0
         self.hang_dir = 0
         self.regrab_t = 0.0
         self.hugging = False
@@ -267,7 +271,8 @@ class Player:
     def update(self, dt, inp, solids):
         self.events = []
         for name in ("coyote", "wall_coyote", "jump_buf", "sling_t",
-                     "pound_t", "rico_t", "regrab_t", "wrap_t", "slam_t"):
+                     "pound_t", "rico_t", "regrab_t", "wrap_t", "slam_t",
+                     "air_lock_t"):
             setattr(self, name, max(0.0, getattr(self, name) - dt))
         self.shake = max(0.0, self.shake - SHAKE_DECAY * dt)
         if self.land_t > 0:
@@ -366,9 +371,11 @@ class Player:
             self.wall_mem = self.wall
 
     def horizontal(self, dt, mx, inp, solids):
-        if self.on_ground and not mx and not inp.down:
-            # no input on the ground: dead stop, after a few frames of grace
-            # so switching keys mid-trick doesn't kill your speed
+        airborne = not self.on_ground
+        if not mx and (airborne and self.air_lock_t <= 0
+                       or not airborne and not inp.down):
+            # no input: dead stop, on the ground or in the air, after a few
+            # frames of grace so switching keys mid-trick keeps your speed
             self.idle_t += dt
             if self.idle_t >= STOP_GRACE:
                 self.vx = 0.0
@@ -389,8 +396,11 @@ class Player:
             elif self.land_t <= 0:      # bhop window: no friction
                 fr = OVERSPEED_FRICTION if mx else FRICTION
                 self.vx = approach(self.vx, target, fr * dt)
-        elif mx and (abs(self.vx) < RUN_SPEED or sign(self.vx) != mx):
-            self.vx = approach(self.vx, target, AIR_ACCEL * dt)
+        elif (mx and self.air_lock_t <= 0
+                and (abs(self.vx) < RUN_SPEED or sign(self.vx) != mx)):
+            # exact air control: full run speed the way you hold, instantly.
+            # holding the way you're already flying faster keeps that speed
+            self.vx = target
 
     def try_jump(self, mx, solids):
         grounded = self.on_ground or self.coyote > 0
@@ -402,6 +412,7 @@ class Player:
                 self.vx = mx * WALLJUMP_X
                 self.vy = -WALLJUMP_Y
                 name = "WALL KICK"
+                self.air_lock_t = AIR_LOCK
             else:
                 self.vx = self.hang_dir * LEDGE_VAULT_VX
                 self.vy = -LEDGE_VAULT_VY
@@ -420,6 +431,7 @@ class Player:
             self.vy = -RICO_VY
             self.facing = -self.rico_dir
             self.dashes = MAX_DASHES
+            self.air_lock_t = AIR_LOCK
             name, shake = "RICOCHET", 4
         elif (self.dashing and self.on_ground and self.dash_dir[1] == 0):
             d = sign(self.dash_dir[0])
@@ -453,6 +465,7 @@ class Player:
             self.vy = -WALLJUMP_Y
             self.facing = -self.wall_mem
             self.jump_cut_ok = True
+            self.air_lock_t = AIR_LOCK
             name = "WALL KICK"
         else:
             return
