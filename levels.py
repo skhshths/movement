@@ -488,8 +488,13 @@ def draw_objects(s, cam, zoom, objs, theme, clock, run=None, hitboxes=False,
     later = []
 
     def tr(r):
-        return pygame.Rect(round((r[0] - cam.x) * zoom), round((r[1] - cam.y) * zoom),
-                           max(1, round(r[2] * zoom)), max(1, round(r[3] * zoom)))
+        # round each edge (not position and size separately) so blocks that
+        # touch in the world touch on screen and sit exactly on grid lines
+        left = round((r[0] - cam.x) * zoom)
+        top = round((r[1] - cam.y) * zoom)
+        right = round((r[0] + r[2] - cam.x) * zoom)
+        bottom = round((r[1] + r[3] - cam.y) * zoom)
+        return pygame.Rect(left, top, max(1, right - left), max(1, bottom - top))
 
     for layer in ("zone", "solid", "other"):
         for i, o in enumerate(objs):

@@ -106,7 +106,13 @@ class Editor:
         return pygame.Vector2(pos[0] / self.zoom + self.cam.x, pos[1] / self.zoom + self.cam.y)
 
     def to_screen(self, x, y):
-        return ((x - self.cam.x) * self.zoom, (y - self.cam.y) * self.zoom)
+        # whole pixels, rounded the same way blocks and grid lines are
+        return (round((x - self.cam.x) * self.zoom), round((y - self.cam.y) * self.zoom))
+
+    def screen_rect(self, x, y, w, h):
+        x0, y0 = self.to_screen(x, y)
+        x1, y1 = self.to_screen(x + w, y + h)
+        return pygame.Rect(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
 
     def snap(self, v):
         g = self.grid
@@ -695,12 +701,12 @@ class Editor:
         y0 = math.floor(self.cam.y / g) * g
         x = x0
         while (x - self.cam.x) * self.zoom < w:
-            sx = (x - self.cam.x) * self.zoom
+            sx = round((x - self.cam.x) * self.zoom)
             pygame.draw.line(s, major if x % 256 == 0 else minor, (sx, 0), (sx, h))
             x += g
         y = y0
         while (y - self.cam.y) * self.zoom < h:
-            sy = (y - self.cam.y) * self.zoom
+            sy = round((y - self.cam.y) * self.zoom)
             pygame.draw.line(s, major if y % 256 == 0 else minor, (0, sy), (w, sy))
             y += g
         ox, oy = self.to_screen(0, 0)
@@ -716,10 +722,8 @@ class Editor:
 
     def draw_paste_ghost(self, s, f):
         dx, dy = self.paste_offset()
-        z = self.zoom
         for o in self.clip:
-            x, y = self.to_screen(o[1] + dx, o[2] + dy)
-            r = pygame.Rect(round(x), round(y), max(1, round(o[3] * z)), max(1, round(o[4] * z)))
+            r = self.screen_rect(o[1] + dx, o[2] + dy, o[3], o[4])
             tint_rect(s, r, KINDS[o[0]].colour, 110)
             pygame.draw.rect(s, KINDS[o[0]].colour, r, 1)
         n = len(self.clip)
@@ -764,7 +768,7 @@ class Editor:
         d = self.drag
         if d and d["mode"] == "place":
             r = self.drag_rect()
-            sr = pygame.Rect(*self.to_screen(r.x, r.y), r.w * self.zoom, r.h * self.zoom)
+            sr = self.screen_rect(r.x, r.y, r.w, r.h)
             pygame.draw.rect(s, KINDS[self.tool].colour, sr, 2)
             self.label(s, f, f"{r.w} x {r.h}   ({r.w / RUN_PF:.1f} frames run, "
                              f"{r.w / DASH_PF:.1f} dash)", self.mouse)
@@ -793,8 +797,7 @@ class Editor:
             else:
                 w, h = k.size
                 x, y = self.snap(wpos.x - w / 2), self.snap(wpos.y - h / 2)
-                sx, sy = self.to_screen(x, y)
-                pygame.draw.rect(s, k.colour, (sx, sy, w * self.zoom, h * self.zoom), 1)
+                pygame.draw.rect(s, k.colour, self.screen_rect(x, y, w, h), 1)
 
     def draw_reference(self, s, f, sp):
         """Ghost of the player's hitbox at the cursor, with a full jump arc
@@ -802,9 +805,9 @@ class Editor:
         z = self.zoom
         pw, ph, sh = Player.WIDTH, Player.H_STAND, Player.H_SLIDE
         bx, by = sp                                   # bottom-centre of the player
-        r = pygame.Rect(*self.to_screen(bx - pw / 2, by - ph), pw * z, ph * z)
+        r = self.screen_rect(bx - pw / 2, by - ph, pw, ph)
         pygame.draw.rect(s, REF, r, 1)
-        slide = pygame.Rect(*self.to_screen(bx - pw / 2, by - sh), pw * z, sh * z)
+        slide = self.screen_rect(bx - pw / 2, by - sh, pw, sh)
         for x in range(slide.left, slide.right, 6):
             pygame.draw.line(s, REF, (x, slide.top), (x + 2, slide.top))
         air = 2 * JUMP_V / GRAVITY
@@ -817,7 +820,7 @@ class Editor:
             for p in pts[::2]:
                 pygame.draw.circle(s, mix(REF, INK, 0.3), p, 2)
         top = JUMP_V ** 2 / (2 * GRAVITY)
-        apex = pygame.Rect(*self.to_screen(bx - pw / 2, by - ph - top), pw * z, ph * z)
+        apex = self.screen_rect(bx - pw / 2, by - ph - top, pw, ph)
         pygame.draw.rect(s, mix(REF, INK, 0.5), apex, 1)
         reach = DASH_SPEED * DASH_TIME
         cx, cy = bx, by - ph / 2
