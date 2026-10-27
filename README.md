@@ -56,6 +56,10 @@ nothing to set up by hand.
 | R | respawn at the last town / restart a level |
 | H | show hitboxes (levels) |
 | Esc | back to the menu |
+| F3 | frame rate and timing |
+
+In the browser the game lowers its drawing resolution by itself if frames get
+slow. Add `?scale=0.7` (0.3 to 1) to the address to pick a resolution yourself.
 
 The full list of maneuvers is in the docstring at the top of `player.py`.
 

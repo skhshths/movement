@@ -13,7 +13,7 @@ import random
 import pygame
 
 from player import AIR_LOCK, MAX_DASHES, Player, sign
-from ui import GOLD, INK, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, RED, TEXT, fmt_time
+from ui import GOLD, INK, tint_rect, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, RED, TEXT, fmt_time
 from world import PALETTES, mix, shade
 
 DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]
@@ -419,19 +419,16 @@ class Run:
             return PLAYER_DASH
         return PLAYER_READY if p.dashes else PLAYER_EMPTY
 
-    def draw(self, s, cam, fonts, hitboxes=False):
+    def draw(self, s, cam, fonts, hitboxes=False, alpha=1.0):
         draw_objects(s, cam, 1.0, self.objs, self.theme, self.clock, self, hitboxes, fonts)
         p = self.player
         bg = PALETTES[self.theme]["sky_bot"]
         for rect, col, age in self.trail:
-            a = int(140 * (1 - age / 0.18))
-            surf = pygame.Surface(rect.size, pygame.SRCALPHA)
-            surf.fill((*col, a))
-            s.blit(surf, (rect.x - cam.x, rect.y - cam.y))
+            tint_rect(s, rect.move(-cam.x, -cam.y), col, int(140 * (1 - age / 0.18)))
         for x, y, vx, vy, life, mx, col, size in self.particles:
             pygame.draw.rect(s, mix(bg, col, life / mx),
                              (x - cam.x - size / 2, y - cam.y - size / 2, size, size))
-        pr = p.rect.move(-cam.x, -cam.y)
+        pr = p.lerp_rect(alpha).move(-cam.x, -cam.y)
         if hitboxes:
             pygame.draw.rect(s, self.player_colour(), pr)
             pygame.draw.rect(s, (60, 255, 120), pr, 1)
@@ -445,22 +442,8 @@ class Run:
 
 
 # --------------------------------------------------------------- drawing ---
-_alpha_cache = {}
-
-
 def _fill_alpha(s, colour, rect, alpha):
-    rect = pygame.Rect(rect).clip(s.get_rect())
-    if rect.w <= 0 or rect.h <= 0:
-        return
-    key = (rect.size, colour, alpha)
-    surf = _alpha_cache.get(key)
-    if surf is None:
-        if len(_alpha_cache) > 300:
-            _alpha_cache.clear()
-        surf = pygame.Surface(rect.size, pygame.SRCALPHA)
-        surf.fill((*colour, alpha))
-        _alpha_cache[key] = surf
-    s.blit(surf, rect)
+    tint_rect(s, rect, colour, alpha)
 
 
 def _span(lo, hi, step, vis_lo, vis_hi):

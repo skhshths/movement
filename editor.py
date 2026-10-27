@@ -18,7 +18,7 @@ KEYS
   P              player reference       T       theme
   C / V          copy / paste           DEL     delete selection
   CTRL+Z / Y     undo / redo            HOME    jump to the start
-  ENTER          playtest from start    F       playtest from the cursor
+  ENTER          playtest               M       spawn at start / at cursor
   ESC            deselect, then leave
 In a playtest: ESC back to editing, R restart, H hitboxes, TAB slow motion,
 COMMA pause, PERIOD step one frame while paused.
@@ -30,7 +30,7 @@ import pygame
 import net
 from levels import KINDS, ORDER, SIZE_MAX, Obj, Run, draw_objects, dump, level_info_line, load
 from player import DASH_SPEED, DASH_TIME, GRAVITY, JUMP_V, RUN_SPEED, Input, Player
-from scenes import Menu, Play, draw_level_hud, hovered
+from scenes import Menu, Play, draw_level_hud, hovered, level_camera
 from ui import (DIM, GOLD, GREEN, INK, PANEL, RED, TEXT, TextBox, button, draw_panel, draw_sky,
                 fmt_time, shade_screen)
 from world import PALETTES, mix
@@ -72,6 +72,7 @@ class Editor:
         self.grid_i = GRIDS.index(16)
         self.hitboxes = False
         self.ghost = True
+        self.from_cursor = False   # playtests spawn at the mouse instead of the start
         self.sel = set()
         self.undo_stack, self.redo_stack = [], []
         self.clip = []
@@ -235,7 +236,8 @@ class Editor:
         after = self.to_world(anchor)
         self.cam += before - after
 
-    def playtest(self, here=False):
+    def playtest(self):
+        here = self.from_cursor
         if not any(o.t == "start" for o in self.objs) and not here:
             self.toast = ["Place a start first", RED, 0.0]
             return
@@ -336,8 +338,8 @@ class Editor:
                 self.home()
             elif k == pygame.K_RETURN:
                 self.playtest()
-            elif k == pygame.K_f:
-                self.playtest(here=True)
+            elif k == pygame.K_m:
+                self.from_cursor = not self.from_cursor
             elif k in (pygame.K_F1, pygame.K_SLASH):
                 self.help = True
         elif e.type == pygame.MOUSEMOTION:
@@ -398,6 +400,8 @@ class Editor:
                     self.playtest()
                 elif name == "publish":
                     self.open_publish()
+                elif name == "spawn":
+                    self.from_cursor = not self.from_cursor
                 elif name == "theme":
                     self.cycle_theme()
                 elif name == "new":
@@ -740,8 +744,10 @@ class Editor:
         s.blit(title, (16, 15))
         x = SIDEBAR_W + 20
         self.ui = {}
-        for name, label, width in (("test", "Playtest  ENTER", 170), ("publish", "Publish", 120),
-                                   ("theme", f"Theme: {self.theme.title()}", 210),
+        for name, label, width in (("test", "Playtest  ENTER", 170),
+                                   ("spawn", "Spawn: " + ("cursor" if self.from_cursor else "start"), 150),
+                                   ("publish", "Publish", 110),
+                                   ("theme", f"Theme: {self.theme.title()}", 200),
                                    ("new", "New", 70), ("help", "Keys", 80), ("menu", "Menu", 90)):
             r = pygame.Rect(x, 8, width, 36)
             hot = r.collidepoint(self.mouse)
@@ -852,11 +858,12 @@ class Editor:
 
     def draw_test(self, s, f):
         run = self.test
-        p = run.player
         w, h = s.get_size()
-        cam = pygame.Vector2(p.rect.center) - (w / 2, h / 2)
+        # paused or slowed playtests draw exactly where the physics is
+        alpha = 1.0 if self.paused or self.slow else self.app.alpha
+        cam = level_camera(s, run, alpha)
         draw_sky(s, cam, PALETTES[run.theme])
-        run.draw(s, cam, f, self.hitboxes)
+        run.draw(s, cam, f, self.hitboxes, alpha)
         mode = []
         if self.slow:
             mode.append("SLOW x0.25")

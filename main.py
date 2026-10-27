@@ -24,6 +24,7 @@ import math
 import os
 import random
 import sys
+import time
 
 import pygame
 
@@ -31,11 +32,15 @@ import net
 from player import DT, FPS, MAX_DASHES, Input, Player
 from quests import NPCS, Quests
 from ui import (DIM, GOLD, INK, PANEL, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, TEXT,
-                Fonts, draw_panel, draw_sky, wrap)
+                Fonts, draw_panel, draw_sky, tint_rect, wrap)
 from world import PALETTES, WORLD_BOTTOM, WORLD_TOP, WORLD_W, World, mix, palette_at, shade
 
 WEB = sys.platform == "emscripten"
 START_SIZE = (1280, 720)
+START_PIXELS = 1600 * 900    # browser: draw at most this many pixels at first
+MIN_WIDTH = 1200             # never draw narrower than this (the editor needs it)
+SLOW_MS = 12.0               # browser: drop resolution if a frame's work takes longer
+FAST_MS = 9.0                # ...and raise it again while there's room
 
 MINIMAP_R = 100              # radius of the round minimap
 MINIMAP_SCALE = 30           # world px per minimap px
@@ -87,6 +92,11 @@ class App:
         self.inp = Input()
         self.name = net.load("name", "") or ""
         self.running = True
+        self.alpha = 1.0
+        self.scale = None              # browser render scale, see adapt_scale
+        self.scale_fixed = False
+        self.work = 0.0                # smoothed ms of step + draw + flip per frame
+        self.perf = None               # F3 frame timing
         self.frame = 0
         self.story = None            # kept so leaving the story doesn't lose progress
         import scenes
@@ -102,25 +112,64 @@ class App:
 
     def sync_size(self):
         if WEB:
-            # match the canvas to the browser window so there are no bars
+            # match the canvas to the browser window so there are no bars.
+            # The game may draw at a lower resolution than the window (the
+            # browser stretches it on the GPU) when frames take too long.
             import platform
             w = int(platform.window.innerWidth)
             h = int(platform.window.innerHeight)
-            if w > 200 and h > 200 and (w, h) != self.screen.get_size():
-                self.screen = pygame.display.set_mode((w, h))
+            if w <= 200 or h <= 200:
+                return
+            self.adapt_scale(w, h)
+            size = (round(w * self.scale), round(h * self.scale))
+            if size != self.screen.get_size():
+                self.screen = pygame.display.set_mode(size)
                 platform.window.config.gui_divider = 1
                 platform.window.window_resize()
         else:
             self.screen = pygame.display.get_surface()
 
+    def adapt_scale(self, w, h):
+        lowest = min(1.0, max(MIN_WIDTH / w, 0.5))
+        if self.scale is None:
+            # start no bigger than about 1600x900 worth of pixels, or what
+            # the page asks for with ?scale=0.7 (which also stops adapting)
+            self.scale = max(lowest, min(1.0, math.sqrt(START_PIXELS / (w * h))))
+            self.scale_t = time.perf_counter()
+            import platform
+            query = str(platform.window.location.search)
+            if "scale=" in query:
+                try:
+                    self.scale = max(0.3, min(1.0, float(query.split("scale=")[1].split("&")[0])))
+                    self.scale_fixed = True
+                except ValueError:
+                    pass
+            return
+        if self.scale_fixed:
+            return
+        now = time.perf_counter()
+        if now - self.scale_t < 2.0:
+            return
+        self.scale_t = now
+        work = self.work
+        if work > SLOW_MS and self.scale > lowest:
+            self.scale = max(lowest, self.scale - 0.1)
+        elif work * ((self.scale + 0.1) / self.scale) ** 2 < FAST_MS and self.scale < 1.0:
+            self.scale = min(1.0, self.scale + 0.1)
+
     async def run(self):
         acc = 0.0
         while self.running:
-            acc += min(self.clock.tick(FPS) / 1000, 0.1)
+            # the browser paces frames to the display itself; capping the
+            # clock there makes frames miss vsync and halves the frame rate
+            acc += min(self.clock.tick(0 if WEB else FPS) / 1000, 0.05)
             for e in pygame.event.get():
                 if e.type == pygame.QUIT:
                     return
                 if e.type == pygame.KEYDOWN:
+                    if e.key == pygame.K_F3:
+                        self.perf = None if self.perf else dict(
+                            frame=16.0, step=0.0, draw=0.0, flip=0.0, last=time.perf_counter())
                     if e.key in (pygame.K_SPACE, pygame.K_k):
                         self.inp.jump_pressed = True
                     if e.key in (pygame.K_LSHIFT, pygame.K_RSHIFT, pygame.K_j):
@@ -133,14 +182,42 @@ class App:
             if self.frame % 20 == 0:
                 self.sync_size()
             self.frame += 1
+            t0 = time.perf_counter()
             while acc >= DT:
                 self.scene.step(DT)
                 self.inp.jump_pressed = self.inp.dash_pressed = False
                 self.inp.interact_pressed = False
                 acc -= DT
+            self.alpha = acc / DT        # how far into the next physics step we are
+            t1 = time.perf_counter()
             self.scene.draw(self.screen)
+            t2 = time.perf_counter()
+            if self.perf is not None:
+                self.draw_perf(t1 - t0, t2 - t1)
             pygame.display.flip()
+            t3 = time.perf_counter()
+            self.work += ((t3 - t0) * 1000 - self.work) * 0.05
+            if self.perf is not None:
+                self.perf["flip"] += ((t3 - t2) * 1000 - self.perf["flip"]) * 0.05
             await asyncio.sleep(0)   # hands control to the browser each frame
+
+    def draw_perf(self, step, draw):
+        """F3: frame rate and where the time goes."""
+        p = self.perf
+        now = time.perf_counter()
+        p["frame"] += ((now - p["last"]) * 1000 - p["frame"]) * 0.05
+        p["last"] = now
+        p["step"] += (step * 1000 - p["step"]) * 0.05
+        p["draw"] += (draw * 1000 - p["draw"]) * 0.05
+        w, h = self.screen.get_size()
+        text = (f"{1000 / max(p['frame'], 0.01):.0f} fps   frame {p['frame']:.1f}  step {p['step']:.1f}"
+                f"  draw {p['draw']:.1f}  flip {p['flip']:.1f} ms   {w}x{h}"
+                f"  scale {self.scale or 1:.1f}")
+        img = self.fonts.font.render(text, True, (255, 255, 120), (0, 0, 0))
+        self.screen.blit(img, (8, h - 26))
+        if WEB and self.frame % 60 == 0:
+            import platform
+            platform.window.eval(f"window.vperf = {text!r}")
 
 
 class Game:
@@ -167,6 +244,7 @@ class Game:
         self.was_dashing = False
         self.prev_vy = 0.0
         self.minimap = self.render_minimap()
+        self.mm_key = None
         self.npcs = {k: self.quests.npc_pos(k) for k in NPCS}
 
     # -- setup ----------------------------------------------------------------
@@ -312,23 +390,22 @@ class Game:
         if p.shake > 0:
             t = pygame.time.get_ticks()
             shake.update(math.sin(t * 0.09) * p.shake, math.cos(t * 0.11) * p.shake)
-        cam = self.cam + shake
-        pal = palette_at(cam.x + s.get_width() / 2)
+        w, h = s.get_size()
+        drawn = p.lerp_rect(self.app.alpha)
+        cam = pygame.Vector2(drawn.center) - (w / 2, h / 2) + shake
+        pal = palette_at(cam.x + w / 2)
 
         draw_sky(s, cam, pal)
         self.draw_world(s, cam)
         self.draw_npcs(s, cam)
 
         for rect, col, age in self.trail:
-            a = int(140 * (1 - age / 0.18))
-            surf = pygame.Surface(rect.size, pygame.SRCALPHA)
-            surf.fill((*col, a))
-            s.blit(surf, (rect.x - cam.x, rect.y - cam.y))
+            tint_rect(s, rect.move(-cam.x, -cam.y), col, int(140 * (1 - age / 0.18)))
         for x, y, vx, vy, life, mx, col, size in self.particles:
             pygame.draw.rect(s, mix(pal["sky_bot"], col, life / mx),
                              (x - cam.x - size / 2, y - cam.y - size / 2, size, size))
 
-        pr = p.rect.move(-cam.x, -cam.y)
+        pr = drawn.move(-cam.x, -cam.y)
         pygame.draw.rect(s, INK, pr.inflate(4, 4))
         pygame.draw.rect(s, self.player_colour(), pr)
         if self.quests.item or self.quests.job:      # parcel on your back
@@ -492,8 +569,8 @@ class Game:
         text, age, col = self.banner
         w, h = s.get_size()
         a = max(0, min(1, age / 0.3, (3.0 - age) / 0.6))
-        img = self.huge.render(text.upper(), True, col)
-        shadow = self.huge.render(text.upper(), True, INK)
+        img = self.huge.render(text.upper(), True, col).copy()
+        shadow = self.huge.render(text.upper(), True, INK).copy()
         img.set_alpha(int(255 * a))
         shadow.set_alpha(int(200 * a))
         r = img.get_rect(center=(w / 2, h * 0.22))
@@ -513,18 +590,24 @@ class Game:
             return (wx - ox) / sc, (wy - oy) / sc
 
         px, py = to_mm(*p.rect.center)
-        disc = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
-        disc.blit(self.minimap, (0, 0), (px - r, py - r, 2 * r, 2 * r))
-        view = pygame.Rect(0, 0, w / sc, h / sc)
-        view.center = (r, r)
-        pygame.draw.rect(disc, DIM, view, 1)
-        for t in self.world.towns:
-            tx, ty = to_mm(t["x"], t["plaza_y"])
-            pygame.draw.circle(disc, INK, (tx - px + r, ty - py + r), 6)
-            pygame.draw.circle(disc, PALETTES[t["id"]]["accent"], (tx - px + r, ty - py + r), 4)
-        disc.blit(self.mm_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        px, py = round(px), round(py)
+        # the round map only changes when you move a whole map pixel
+        key = (px, py, w, h)
+        if self.mm_key != key:
+            self.mm_key = key
+            disc = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
+            disc.blit(self.minimap, (0, 0), (px - r, py - r, 2 * r, 2 * r))
+            view = pygame.Rect(0, 0, w / sc, h / sc)
+            view.center = (r, r)
+            pygame.draw.rect(disc, DIM, view, 1)
+            for t in self.world.towns:
+                tx, ty = to_mm(t["x"], t["plaza_y"])
+                pygame.draw.circle(disc, INK, (tx - px + r, ty - py + r), 6)
+                pygame.draw.circle(disc, PALETTES[t["id"]]["accent"], (tx - px + r, ty - py + r), 4)
+            disc.blit(self.mm_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            self.mm_disc = disc
         pygame.draw.circle(s, INK, (cx, cy), r + 4)
-        s.blit(disc, (cx - r, cy - r))
+        s.blit(self.mm_disc, (cx - r, cy - r))
         # quest target: on the map, or pinned to the rim when far away
         pos, tid = self.target()
         if pos:
@@ -592,7 +675,7 @@ class Game:
         # trick feed above the panel, newest at the bottom and biggest
         y = panel.top - 10
         for i, (name, age, col) in enumerate(reversed(self.feed)):
-            fade = max(0, 1 - age / 3.0)
+            fade = round(max(0, 1 - age / 3.0) * 12) / 12   # few steps, so text caches
             base = col if i == 0 and age < 0.8 else TEXT
             img = (self.mid if i == 0 else self.font).render(name, True, mix(INK, base, fade))
             y -= img.get_height() + 2

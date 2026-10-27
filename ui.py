@@ -18,14 +18,40 @@ PLAYER_EMPTY = (255, 140, 70)
 PLAYER_DASH = (255, 255, 255)
 
 
+class CachedFont:
+    """A font that remembers what it has rendered. Rendering text is one of
+    the slowest things in the browser build, and most HUD text repeats
+    frame after frame. Don't modify the returned surfaces."""
+
+    def __init__(self, size):
+        self.font = pygame.font.Font(None, size)
+        self.cache = {}
+
+    def render(self, text, antialias, colour, background=None):
+        key = (text, tuple(colour), background and tuple(background))
+        img = self.cache.get(key)
+        if img is None:
+            if len(self.cache) > 600:
+                self.cache.clear()
+            img = self.font.render(text, antialias, colour, background)
+            self.cache[key] = img
+        return img
+
+    def size(self, text):
+        return self.font.size(text)
+
+    def get_height(self):
+        return self.font.get_height()
+
+
 class Fonts:
     def __init__(self):
-        self.small = pygame.font.Font(None, 20)
-        self.font = pygame.font.Font(None, 24)
-        self.mid = pygame.font.Font(None, 30)
-        self.big = pygame.font.Font(None, 52)
-        self.huge = pygame.font.Font(None, 84)
-        self.title = pygame.font.Font(None, 150)
+        self.small = CachedFont(20)
+        self.font = CachedFont(24)
+        self.mid = CachedFont(30)
+        self.big = CachedFont(52)
+        self.huge = CachedFont(84)
+        self.title = CachedFont(150)
 
 
 def wrap(font, text, width):
@@ -106,17 +132,47 @@ def draw_sky(s, cam, pal):
             pygame.draw.rect(s, col, (0, max(0, horizon), w, h))
 
 
+_panels = {}
+
+
 def draw_panel(s, rect, alpha=200, colour=PANEL, radius=12):
     rect = pygame.Rect(rect)
-    panel = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(panel, (*colour, alpha), panel.get_rect(), border_radius=radius)
+    key = (rect.size, tuple(colour), alpha, radius)
+    panel = _panels.get(key)
+    if panel is None:
+        if len(_panels) > 200:
+            _panels.clear()
+        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(panel, (*colour, alpha), panel.get_rect(), border_radius=radius)
+        _panels[key] = panel
     s.blit(panel, rect)
 
 
+_tints = {}
+
+
+def tint_rect(s, rect, colour, alpha):
+    """Translucent rectangle, from a cache of plain surfaces with surface
+    alpha (much cheaper to blend than per-pixel alpha)."""
+    rect = pygame.Rect(rect).clip(s.get_rect())
+    if rect.w <= 0 or rect.h <= 0:
+        return
+    key = (rect.size, tuple(colour))
+    surf = _tints.get(key)
+    if surf is None:
+        if len(_tints) > 300:
+            _tints.clear()
+        surf = pygame.Surface(rect.size).convert()
+        surf.fill(colour)
+        _tints[key] = surf
+    surf.set_alpha(alpha)
+    s.blit(surf, rect)
+
+
 def shade_screen(s, alpha=150):
-    veil = pygame.Surface(s.get_size(), pygame.SRCALPHA)
-    veil.fill((*INK, alpha))
-    s.blit(veil, (0, 0))
+    """Darkens the whole screen in one pass, without a full-screen overlay."""
+    v = max(0, 255 - alpha)
+    s.fill((v, v, v), special_flags=pygame.BLEND_RGB_MULT)
 
 
 def button(s, fonts, rect, label, hot=False, accent=GOLD, font=None):

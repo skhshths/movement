@@ -15,13 +15,18 @@ WEB = sys.platform == "emscripten"
 ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
-def menu_backdrop(s, t):
-    """Slow pan across the story world's skies, behind the menus."""
+def menu_backdrop(s, t, dim=0):
+    """Slow pan across the story world's skies, behind the menus. `dim`
+    darkens it like shade_screen would, but by darkening the colours
+    instead of the finished pixels, which is far cheaper in the browser."""
     w, h = s.get_size()
     x = (t * 500) % WORLD_W
     cam = pygame.Vector2(x, -250 + math.sin(t * 0.2) * 200)
-    draw_sky(s, cam, palette_at(x + w / 2))
-    return palette_at(x + w / 2)
+    pal = palette_at(x + w / 2)
+    k = 1 - dim / 255
+    dark = {name: tuple(int(c * k) for c in col) for name, col in pal.items()}
+    draw_sky(s, cam, dark)
+    return pal
 
 
 def hovered(rects, pos):
@@ -100,8 +105,7 @@ class Menu:
     def draw(self, s):
         f = self.app.fonts
         w, h = s.get_size()
-        pal = menu_backdrop(s, self.t)
-        shade_screen(s, 70)
+        pal = menu_backdrop(s, self.t, 70)
         title = f.title.render("VELOCITY", True, TEXT)
         shadow = f.title.render("VELOCITY", True, INK)
         r = title.get_rect(center=(w / 2, h * 0.2))
@@ -164,8 +168,7 @@ class IdEntry:
     def draw(self, s):
         f = self.app.fonts
         w, h = s.get_size()
-        menu_backdrop(s, self.t)
-        shade_screen(s, 120)
+        menu_backdrop(s, self.t, 120)
         head = f.huge.render("PLAY BY ID", True, TEXT)
         s.blit(head, head.get_rect(center=(w / 2, h * 0.18)))
         box = pygame.Rect(0, 0, 300, 80)
@@ -262,8 +265,7 @@ class Browse:
     def draw(self, s):
         f = self.app.fonts
         w, h = s.get_size()
-        pal = menu_backdrop(s, self.t)
-        shade_screen(s, 130)
+        pal = menu_backdrop(s, self.t, 130)
         head = f.huge.render("LEVELS", True, TEXT)
         s.blit(head, head.get_rect(midtop=(w / 2, 30)))
         sub = f.font.render("Every level here has been beaten at least once.", True, DIM)
@@ -364,16 +366,16 @@ def draw_level_hud(s, fonts, run, title=None, sub=None):
         pygame.draw.circle(s, col, c, 7)
     y = h - 130
     for i, (name, age, col) in enumerate(reversed(run.feed)):
-        fade = max(0, 1 - age / 2.5)
+        fade = round(max(0, 1 - age / 2.5) * 12) / 12   # few steps, so text caches
         img = (f.mid if i == 0 else f.font).render(name, True, mix(INK, col if i == 0 else TEXT, fade))
         y -= img.get_height() + 2
         s.blit(img, (w - img.get_width() - 28, y))
 
 
-def level_camera(s, run):
+def level_camera(s, run, alpha):
     w, h = s.get_size()
     p = run.player
-    cam = pygame.Vector2(p.rect.center) - (w / 2, h / 2)
+    cam = pygame.Vector2(p.lerp_rect(alpha).center) - (w / 2, h / 2)
     if p.shake > 0:
         t = pygame.time.get_ticks()
         cam += (math.sin(t * 0.09) * p.shake, math.cos(t * 0.11) * p.shake)
@@ -442,8 +444,7 @@ class Play:
         f = self.app.fonts
         w, h = s.get_size()
         if not self.run:
-            menu_backdrop(s, self.t)
-            shade_screen(s, 140)
+            menu_backdrop(s, self.t, 140)
             text, col = (self.error, RED) if self.error else (f"Loading level {self.id}...", TEXT)
             img = f.big.render(text, True, col)
             s.blit(img, img.get_rect(center=(w / 2, h / 2)))
@@ -451,9 +452,9 @@ class Play:
             s.blit(hint, hint.get_rect(midtop=(w / 2, h / 2 + 40)))
             return
         run = self.run
-        cam = level_camera(s, run)
+        cam = level_camera(s, run, self.app.alpha)
         draw_sky(s, cam, PALETTES[run.theme])
-        run.draw(s, cam, f, self.hitboxes)
+        run.draw(s, cam, f, self.hitboxes, self.app.alpha)
         m = self.meta
         status = "verified" if m["verified"] else "unverified: be the first to beat it!"
         best = f"   best {fmt_time(m['best'])} by {m['best_by']}" if m.get("best") is not None else ""

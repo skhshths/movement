@@ -63,6 +63,11 @@ MANEUVERS
   Corner Boost   Hit a low lip at speed: pop up over it without losing speed.
   Momentum Roll  Land from a fast fall while holding S: your falling speed is
                  converted into a sprinting slide.
+
+  Corner correction: clip the corner of a gap or ceiling by a few pixels and
+  you're nudged around it, so you can thread gaps exactly as wide (or tall)
+  as yourself without being pixel perfect. Landing on a ledge's edge still
+  counts as landing.
 """
 import math
 
@@ -138,6 +143,7 @@ EDGE_BOOST = 1.25
 SKATE_SPEED = 1150
 
 CORNER_LIP = 22            # max lip height you can step / boost over
+SLIP = 8                   # corner correction: how far you get nudged into a gap
 CORNER_POP = 380
 
 ROLL_MIN_VY = 800
@@ -198,6 +204,7 @@ class Player:
     def reset(self):
         self.rect = pygame.FRect(0, 0, self.WIDTH, self.H_STAND)
         self.rect.midbottom = self.spawn
+        self.prev = (self.rect.x, self.rect.y)   # position one step ago, for smooth drawing
         self.vx = self.vy = 0.0
         self.facing = 1
         self.mx = 0
@@ -275,8 +282,18 @@ class Player:
         self.vy *= 0.45 if self.vy < 0 else 0.7
 
     # -- per-step update -----------------------------------------------------
+    def lerp_rect(self, alpha):
+        """Where to draw the player between the last two physics steps,
+        so motion is smooth at any display refresh rate."""
+        x0, y0 = self.prev
+        r = self.rect.copy()
+        r.x = x0 + (r.x - x0) * alpha
+        r.y = y0 + (r.y - y0) * alpha
+        return r
+
     def update(self, dt, inp, solids):
         self.events = []
+        self.prev = (self.rect.x, self.rect.y)
         for name in ("coyote", "wall_coyote", "jump_buf", "sling_t",
                      "pound_t", "rico_t", "regrab_t", "wrap_t", "slam_t",
                      "air_lock_t"):
@@ -491,7 +508,7 @@ class Player:
         for s in solids:
             if not self.rect.colliderect(s):
                 continue
-            if self.step_up(s, solids):
+            if self.step_up(s, solids) or self.slip_under(s, solids):
                 continue
             if self.vx > 0:
                 self.rect.right = s.left
@@ -509,6 +526,8 @@ class Player:
         self.rect.y += self.vy * dt
         for s in solids:
             if self.rect.colliderect(s):
+                if self.vy and self.slip_past(s, solids):
+                    continue
                 if self.vy > 0:
                     self.rect.bottom = s.top
                     self.hit_floor()
@@ -616,6 +635,39 @@ class Player:
             self.vy = min(self.vy, -CORNER_POP)
             self.dash_t = 0.0
             self.trick("CORNER BOOST", 2)
+        return True
+
+    def slip_past(self, s, solids):
+        """Moving vertically into a block you only clip by a few pixels:
+        slide sideways around its corner. Going up this always applies (no
+        head bonks on corners); going down only into a narrow gap, so
+        landing on the edge of a ledge still lands."""
+        r = self.rect
+        if s.left > r.left and r.right - s.left <= SLIP:
+            shift = s.left - r.right
+        elif s.right < r.right and s.right - r.left <= SLIP:
+            shift = s.right - r.left
+        else:
+            return False
+        moved = r.move(shift, 0)
+        if self.collides(moved, solids):
+            return False
+        if self.vy > 0 and not self.collides(moved.move(sign(shift) * SLIP, 0), solids):
+            return False
+        self.rect = moved
+        return True
+
+    def slip_under(self, s, solids):
+        """Moving sideways into a block whose bottom corner you clip by a
+        few pixels: duck under it, so you fit through slots your height."""
+        r = self.rect
+        drop = s.bottom - r.top
+        if not 0 < drop <= SLIP or s.bottom >= r.bottom:
+            return False
+        moved = r.move(0, drop)
+        if self.collides(moved, solids):
+            return False
+        self.rect = moved
         return True
 
     def hit_wall(self, side):
