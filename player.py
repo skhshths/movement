@@ -28,11 +28,11 @@ MANEUVERS
                  fast slide.
   Wave Jump      Jump out of a wavedash without turning around: long, flat
                  jump that keeps the slide speed.
-  Slide          Hold S while running fast. Very low friction. Let go of
-                 every direction and you stop dead, on the ground or in
-                 the air. Air control is exact: you move at full run speed
-                 the way you hold, and keep any extra speed while holding
-                 the way you're already flying.
+  Slide          Hold S while running fast. Very low friction.
+
+  Plain WASD movement is exact on the ground and in the air: full speed
+  instantly, a dead stop when you let go, instant turns. Only speed beyond a
+  run, which comes from moves, carries momentum and drifts.
   Long Jump      Jump out of a slide: +15% speed, low arc.
   Bunny Hop      Jump within a few frames of landing while above run speed:
                  no ground friction, small speed bonus, chains.
@@ -77,8 +77,8 @@ FAST_FALL_MULT = 1.7
 MAX_FALL = 1400
 RUN_SPEED = 420
 GROUND_ACCEL = 3200
-FRICTION = 3000            # stopping with no input
-STOP_GRACE = 0.06          # no-input time before a dead stop (ground or air)
+AIR_ACCEL = 1500            # turning against momentum in the air
+FRICTION = 3000            # momentum bleeding off with no input
 AIR_LOCK = 0.15            # air control ignored this long after a kick-off
 OVERSPEED_FRICTION = 900   # bleeding off speed above RUN_SPEED on the ground
 JUMP_V = 780
@@ -205,7 +205,6 @@ class Player:
         self.wall_mem = 0
         self.dashes = MAX_DASHES
         self.hanging = False
-        self.idle_t = 0.0
         self.air_lock_t = 0.0
         self.hang_dir = 0
         self.regrab_t = 0.0
@@ -371,17 +370,6 @@ class Player:
             self.wall_mem = self.wall
 
     def horizontal(self, dt, mx, inp, solids):
-        airborne = not self.on_ground
-        if not mx and (airborne and self.air_lock_t <= 0
-                       or not airborne and not inp.down):
-            # no input: dead stop, on the ground or in the air, after a few
-            # frames of grace so switching keys mid-trick keeps your speed
-            self.idle_t += dt
-            if self.idle_t >= STOP_GRACE:
-                self.vx = 0.0
-                self.stop_slide(solids)
-            return
-        self.idle_t = 0.0
         if self.sliding:
             self.slide_t += dt
             self.vx = approach(self.vx, 0, SLIDE_FRICTION * dt)
@@ -389,18 +377,24 @@ class Player:
                     or (not inp.down and self.slide_t > SLIDE_MIN_TIME)):
                 self.stop_slide(solids)
             return
+        if not self.on_ground and self.air_lock_t > 0:
+            return                       # just kicked off a wall
         target = mx * RUN_SPEED
+        if abs(self.vx) <= RUN_SPEED:
+            # plain WASD movement is exact, on the ground and in the air:
+            # full speed instantly, dead stop on release, instant turns
+            self.vx = target
+            return
+        # faster than running means momentum from a move: it carries
+        d = sign(self.vx)
         if self.on_ground:
-            if mx and (abs(self.vx) < RUN_SPEED or sign(self.vx) != mx):
+            if mx and mx != d:
                 self.vx = approach(self.vx, target, GROUND_ACCEL * dt)
             elif self.land_t <= 0:      # bhop window: no friction
                 fr = OVERSPEED_FRICTION if mx else FRICTION
                 self.vx = approach(self.vx, target, fr * dt)
-        elif (mx and self.air_lock_t <= 0
-                and (abs(self.vx) < RUN_SPEED or sign(self.vx) != mx)):
-            # exact air control: full run speed the way you hold, instantly.
-            # holding the way you're already flying faster keeps that speed
-            self.vx = target
+        elif mx and mx != d:
+            self.vx = approach(self.vx, target, AIR_ACCEL * dt)
 
     def try_jump(self, mx, solids):
         grounded = self.on_ground or self.coyote > 0
