@@ -33,7 +33,9 @@ const MAX_OBJECTS = 5000;
 const PAGE = 40;
 const PUBLISH_LIMIT = 20;         // per address per hour
 const ADMIN_TRIES = 10;           // wrong admin codes per address per hour
-const ADMIN_TRIES_ALL = 100;      // wrong admin codes from everyone per hour
+const ADMIN_TRIES_ALL = 100;      // wrong admin codes from everyone per hour, then
+                                  // each address gets one try an hour...
+const ADMIN_TRIES_MAX = 1000;     // ...and past this nobody can try until it eases
 const REPLAY_STEPS = 120 * 60 * 60;   // an hour of physics steps
 const REPLAY_FORMAT = /^\d{1,3}(\*\d{1,7})?(,\d{1,3}(\*\d{1,7})?)*$/;
 const COORD_MAX = 1_000_000;      // must match levels.py
@@ -179,10 +181,13 @@ export class LevelStore extends DurableObject {
     this.sql.exec("DELETE FROM admin_tries WHERE t < ?", now - 3600_000);
     const mine = this.sql.exec("SELECT COUNT(*) AS n FROM admin_tries WHERE addr = ?", key).one().n;
     const all = this.sql.exec("SELECT COUNT(*) AS n FROM admin_tries").one().n;
-    // Under a mass attack (global cap reached) every address drops to one
-    // try an hour instead of being locked out entirely, so the admin can
-    // still get in from an address that hasn't been guessing.
-    if (mine >= ADMIN_TRIES || (all >= ADMIN_TRIES_ALL && mine >= 1)) return { locked: true };
+    // Under a mass attack every address drops to one try an hour, so the
+    // admin can still get in from an address that hasn't been guessing;
+    // past a hard ceiling everything locks, so fresh addresses can't keep
+    // guessing forever.
+    if (mine >= ADMIN_TRIES || (all >= ADMIN_TRIES_ALL && mine >= 1) || all >= ADMIN_TRIES_MAX) {
+      return { locked: true };
+    }
     this.sql.exec("INSERT INTO admin_tries (addr, t) VALUES (?, ?)", key, now);
     const ok = await codeMatches(this.env, code);
     if (ok) this.sql.exec("DELETE FROM admin_tries WHERE addr = ?", key);
