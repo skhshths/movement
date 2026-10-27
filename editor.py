@@ -21,10 +21,12 @@ KEYS
   CTRL+Z / Y     undo / redo            HOME    jump to the start
   ENTER          playtest               M       spawn at start / at cursor
   ESC            deselect, then leave
-In a playtest: ESC back to editing, R restart, H hitboxes, TAB slow motion,
-COMMA pause, PERIOD step one frame while paused.
+In a playtest: ESC back to editing, F freeze and edit with a hologram of where
+you were, R restart, H hitboxes, TAB slow motion, COMMA pause, PERIOD step one
+frame while paused.
 """
 import math
+from collections import deque
 
 import pygame
 
@@ -74,6 +76,8 @@ class Editor:
         self.hitboxes = False
         self.ghost = True
         self.from_cursor = False   # playtests spawn at the mouse instead of the start
+        self.holo = None           # frozen player from the last playtest (F)
+        self.path = deque(maxlen=240)   # player centre over the last 2s of a playtest
         self.sel = set()
         self.undo_stack, self.redo_stack = [], []
         self.clip = []
@@ -289,6 +293,8 @@ class Editor:
             spawn = (wpos.x, wpos.y + Player.H_STAND / 2)
         self.save_draft()
         self.test = Run(self.objs, self.theme, spawn)
+        self.holo = None
+        self.path.clear()
         self.slow = self.paused = False
 
     # -- events ---------------------------------------------------------------
@@ -300,11 +306,25 @@ class Editor:
         else:
             self.edit_event(e)
 
+    def freeze(self):
+        """Stop the playtest and go back to editing, leaving a hologram of
+        exactly where the player was, how fast it was going and the path
+        it took to get there."""
+        p = self.test.player
+        self.holo = dict(rect=p.rect.copy(), vx=p.vx, vy=p.vy, dashes=p.dashes,
+                         path=list(self.path))
+        self.test = None
+        w, h = self.app.screen.get_size()
+        self.cam = pygame.Vector2(p.rect.centerx - w / 2 / self.zoom,
+                                  p.rect.centery - h / 2 / self.zoom)
+
     def test_event(self, e):
         if e.type != pygame.KEYDOWN:
             return
         if e.key == pygame.K_ESCAPE:
             self.test = None
+        elif e.key == pygame.K_f:
+            self.freeze()
         elif e.key == pygame.K_r:
             self.test.restart()
         elif e.key == pygame.K_h:
@@ -658,6 +678,7 @@ class Editor:
             self.slow_acc -= 1
         if not self.test.finished:
             self.test.step(dt, ti)
+            self.path.append(self.test.player.rect.center)
         ti.jump_pressed = ti.dash_pressed = False
 
     # -- drawing ----------------------------------------------------------------
@@ -671,6 +692,8 @@ class Editor:
         self.draw_grid(s)
         draw_objects(s, self.cam, self.zoom, self.objs, self.theme, self.t, None,
                      self.hitboxes, f, self.sel)
+        if self.holo:
+            self.draw_holo(s, f)
         self.draw_handles(s)
         on_bar = any(r.collidepoint(self.mouse) for r in self.sel_buttons.values())
         if self.pasting and not self.in_ui(self.mouse):
@@ -719,6 +742,34 @@ class Editor:
                 hx, hy = self.to_screen(o.x + o.w, o.y + o.h)
                 pygame.draw.rect(s, GOLD, (hx - 5, hy - 5, 10, 10))
                 pygame.draw.rect(s, INK, (hx - 5, hy - 5, 10, 10), 1)
+
+    def draw_holo(self, s, f):
+        ho = self.holo
+        col = (120, 255, 240)
+        # path of the last two seconds, fading out with age
+        path = ho["path"]
+        for k in range(0, len(path), 3):
+            fade = (k + 1) / len(path)
+            pygame.draw.circle(s, mix(INK, col, 0.25 + 0.75 * fade), self.to_screen(*path[k]),
+                               max(1, round(2 * self.zoom)))
+        r = ho["rect"]
+        sr = self.screen_rect(r.x, r.y, r.w, r.h)
+        tint_rect(s, sr, col, 70 + round(30 * math.sin(self.t * 5)))
+        for y in range(sr.top + 2, sr.bottom, 4):           # hologram scanlines
+            pygame.draw.line(s, mix(col, (255, 255, 255), 0.4), (sr.left, y), (sr.right - 1, y))
+        pygame.draw.rect(s, col, sr, 1)
+        # velocity: where you'd be a tenth of a second later
+        c = self.to_screen(*r.center)
+        tip = self.to_screen(r.centerx + ho["vx"] * 0.1, r.centery + ho["vy"] * 0.1)
+        if math.dist(c, tip) > 4:
+            pygame.draw.line(s, col, c, tip, 2)
+            pygame.draw.circle(s, col, tip, 3)
+        text = (f"x {r.x:.1f}  y {r.y:.1f}   vx {ho['vx']:.0f}  vy {ho['vy']:.0f}"
+                f"   dash {'ready' if ho['dashes'] else 'used'}")
+        img = f.small.render(text, True, col)
+        box = img.get_rect(midbottom=(sr.centerx, sr.top - 8))
+        draw_panel(s, box.inflate(10, 6), 200, radius=6)
+        s.blit(img, box)
 
     def draw_paste_ghost(self, s, f):
         dx, dy = self.paste_offset()
@@ -973,7 +1024,7 @@ class Editor:
         if self.paused:
             mode.append("PAUSED  (. step)")
         draw_level_hud(s, f, run, "PLAYTEST" + ("   " + "   ".join(mode) if mode else ""),
-                       "ESC edit   R restart   H hitboxes   TAB slow   , pause")
+                       "ESC edit   F freeze here   R restart   H hitboxes   TAB slow   , pause")
         if run.finished:
             shade_screen(s, 140)
             head = f.huge.render("CLEARED", True, GOLD)
