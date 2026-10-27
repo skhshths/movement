@@ -114,9 +114,18 @@ function checkReplay(text) {
 }
 
 function addressKey(addr) {
-  // IPv6 users usually control a whole /64, so count wrong codes per /64
+  // IPv6 users usually control a whole /64, so count wrong codes per /64.
+  // Expand "::" first: the same /64 can be written many shortened ways.
   if (!addr.includes(":")) return addr;
-  return addr.split(":").slice(0, 4).join(":") + "::/64";
+  const [head, tail] = addr.toLowerCase().split("%")[0].split("::");
+  const front = head ? head.split(":") : [];
+  const back = tail !== undefined && tail ? tail.split(":") : [];
+  if (back.length && back[back.length - 1].includes(".")) back.splice(-1, 1, "0", "0");  // v4 tail
+  const zeros = tail !== undefined ? Array(Math.max(0, 8 - front.length - back.length)).fill("0") : [];
+  const groups = [...front, ...zeros, ...back].slice(0, 4)
+    .map((g) => (parseInt(g, 16) || 0).toString(16));
+  while (groups.length < 4) groups.push("0");
+  return groups.join(":") + "::/64";
 }
 
 async function codeMatches(env, code) {
@@ -170,7 +179,10 @@ export class LevelStore extends DurableObject {
     this.sql.exec("DELETE FROM admin_tries WHERE t < ?", now - 3600_000);
     const mine = this.sql.exec("SELECT COUNT(*) AS n FROM admin_tries WHERE addr = ?", key).one().n;
     const all = this.sql.exec("SELECT COUNT(*) AS n FROM admin_tries").one().n;
-    if (mine >= ADMIN_TRIES || all >= ADMIN_TRIES_ALL) return { locked: true };
+    // Under a mass attack (global cap reached) every address drops to one
+    // try an hour instead of being locked out entirely, so the admin can
+    // still get in from an address that hasn't been guessing.
+    if (mine >= ADMIN_TRIES || (all >= ADMIN_TRIES_ALL && mine >= 1)) return { locked: true };
     this.sql.exec("INSERT INTO admin_tries (addr, t) VALUES (?, ?)", key, now);
     const ok = await codeMatches(this.env, code);
     if (ok) this.sql.exec("DELETE FROM admin_tries WHERE addr = ?", key);
