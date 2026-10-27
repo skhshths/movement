@@ -772,14 +772,24 @@ def encode_replay(masks):
     return ",".join(f"{m}*{n}" if n > 1 else str(m) for m, n in out)
 
 
+REPLAY_STEPS = 120 * 60 * 60       # an hour of steps is plenty
+
+
 def decode_replay(text):
+    """Recordings come from other players, so anything malformed is
+    skipped and the length is capped before any list is built."""
     masks = []
-    for part in text.split(","):
-        if not part:
-            continue
+    for part in str(text).split(","):
         m, _, n = part.partition("*")
-        masks.extend([int(m)] * int(n or 1))
-        if len(masks) > 120 * 60 * 60:          # an hour of steps is plenty
+        try:
+            m, n = int(m), int(n or 1)
+        except ValueError:
+            continue
+        if not 0 <= m < 128 or n < 1:
+            continue
+        n = min(n, REPLAY_STEPS - len(masks))
+        masks.extend([m] * n)
+        if len(masks) >= REPLAY_STEPS:
             break
     return masks
 

@@ -33,6 +33,9 @@ const MAX_OBJECTS = 5000;
 const PAGE = 40;
 const PUBLISH_LIMIT = 20;         // per address per hour
 const ADMIN_TRIES = 10;           // wrong admin codes per address per hour
+const ADMIN_TRIES_ALL = 100;      // wrong admin codes from everyone per hour
+const REPLAY_STEPS = 120 * 60 * 60;   // an hour of physics steps
+const REPLAY_FORMAT = /^\d{1,3}(\*\d{1,7})?(,\d{1,3}(\*\d{1,7})?)*$/;
 const COORD_MAX = 1_000_000;      // must match levels.py
 const SIZE_MAX = 10_000;
 const PATH_MAX = 32;              // saw path points
@@ -97,6 +100,33 @@ function checkLevel(data) {
   return null;
 }
 
+function checkReplay(text) {
+  // "mask*count,..." with masks 0-127 and at most an hour of steps
+  if (typeof text !== "string" || text.length > MAX_REPLAY || !REPLAY_FORMAT.test(text)) return null;
+  let steps = 0;
+  for (const part of text.split(",")) {
+    const [mask, count] = part.split("*");
+    if (Number(mask) > 127) return null;
+    steps += Number(count || 1);
+    if (steps > REPLAY_STEPS) return null;
+  }
+  return text;
+}
+
+function addressKey(addr) {
+  // IPv6 users usually control a whole /64, so count wrong codes per /64
+  if (!addr.includes(":")) return addr;
+  return addr.split(":").slice(0, 4).join(":") + "::/64";
+}
+
+async function codeMatches(env, code) {
+  if (!env.ADMIN_CODE || typeof code !== "string" || !code) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(code)),
+                                    crypto.subtle.digest("SHA-256", enc.encode(env.ADMIN_CODE))]);
+  return crypto.subtle.timingSafeEqual(a, b);
+}
+
 function validRating(r, allowZero) {
   return Number.isInteger(r) && r >= (allowZero ? 0 : 1) && r <= RATING_MAX;
 }
@@ -125,23 +155,26 @@ export class LevelStore extends DurableObject {
                                ["sugg_count", "INTEGER NOT NULL DEFAULT 0"]]) {
       if (!have.has(col)) this.sql.exec(`ALTER TABLE levels ADD COLUMN ${col} ${type}`);
     }
+    // admin code attempts, kept in storage so they survive restarts
+    this.sql.exec("CREATE TABLE IF NOT EXISTS admin_tries (addr TEXT NOT NULL, t INTEGER NOT NULL)");
     this.recent = new Map();      // address -> publish times
-    this.fails = new Map();       // address -> wrong admin code times
     this.suggested = new Set();   // "address level" pairs that already suggested
   }
 
-  // -- admin attempts -------------------------------------------------------
-  adminLocked(addr) {
+  // -- admin code -------------------------------------------------------------
+  async checkAdmin(addr, code) {
+    // The attempt is written down before the (async) comparison, so codes
+    // sent in parallel can't slip past the limit; a right code clears it.
+    const key = addressKey(addr);
     const now = Date.now();
-    const times = (this.fails.get(addr) || []).filter((t) => now - t < 3600_000);
-    this.fails.set(addr, times);
-    return times.length >= ADMIN_TRIES;
-  }
-
-  adminFailed(addr) {
-    const times = this.fails.get(addr) || [];
-    times.push(Date.now());
-    this.fails.set(addr, times);
+    this.sql.exec("DELETE FROM admin_tries WHERE t < ?", now - 3600_000);
+    const mine = this.sql.exec("SELECT COUNT(*) AS n FROM admin_tries WHERE addr = ?", key).one().n;
+    const all = this.sql.exec("SELECT COUNT(*) AS n FROM admin_tries").one().n;
+    if (mine >= ADMIN_TRIES || all >= ADMIN_TRIES_ALL) return { locked: true };
+    this.sql.exec("INSERT INTO admin_tries (addr, t) VALUES (?, ?)", key, now);
+    const ok = await codeMatches(this.env, code);
+    if (ok) this.sql.exec("DELETE FROM admin_tries WHERE addr = ?", key);
+    return { ok };
   }
 
   // -- levels -----------------------------------------------------------------
@@ -247,14 +280,6 @@ export class LevelStore extends DurableObject {
   }
 }
 
-async function codeMatches(env, code) {
-  if (!env.ADMIN_CODE || typeof code !== "string" || !code) return false;
-  const enc = new TextEncoder();
-  const [a, b] = await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(code)),
-                                    crypto.subtle.digest("SHA-256", enc.encode(env.ADMIN_CODE))]);
-  return crypto.subtle.timingSafeEqual(a, b);
-}
-
 async function api(request, env, store, path) {
   const url = new URL(request.url);
   const parts = path.split("/").filter(Boolean);       // ["levels", id?, action?]
@@ -271,9 +296,9 @@ async function api(request, env, store, path) {
   const offered = body.code || request.headers.get("x-admin-code");
   let admin = false;
   if (offered) {
-    if (await store.adminLocked(addr)) return reply({ error: "too many wrong codes, try later" }, 429);
-    admin = await codeMatches(env, offered);
-    if (!admin) await store.adminFailed(addr);
+    const check = await store.checkAdmin(addr, String(offered).slice(0, 256));
+    if (check.locked) return reply({ error: "too many wrong codes, try later" }, 429);
+    admin = check.ok;
   }
   const named = (text) => {
     // nobody but the admin may call themselves admin
@@ -327,7 +352,7 @@ async function api(request, env, store, path) {
     if (action === "clear") {
       const time = Number(body.time);
       if (!Number.isFinite(time) || time < 0.5 || time > 86400) return reply({ error: "bad time" }, 400);
-      const replay = typeof body.replay === "string" && body.replay.length <= MAX_REPLAY ? body.replay : null;
+      const replay = checkReplay(body.replay);
       const out = await store.clear(id, time, named(body.name), replay);
       return out ? reply(out) : reply({ error: "no level with that ID" }, 404);
     }
