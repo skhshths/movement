@@ -16,14 +16,14 @@ import threading
 
 WEB = sys.platform == "emscripten"
 # desktop talks to the live site; set VELOCITY_API to use a local server
-API = "" if WEB else os.environ.get("VELOCITY_API", "https://a.oliverbar.net")
+API = "" if WEB else os.environ.get("VELOCITY_API", "https://movement.oliverbar.net")
 
 _JS = """
 window.vnet = window.vnet || {
   res: {},
-  go(id, method, url, body) {
-    const opt = {method: method};
-    if (body) { opt.body = body; opt.headers = {"content-type": "application/json"}; }
+  go(id, method, url, body, headers) {
+    const opt = {method: method, headers: headers || {}};
+    if (body) { opt.body = body; opt.headers["content-type"] = "application/json"; }
     fetch(url, opt)
       .then(r => r.text().then(t => { this.res[id] = JSON.stringify([r.status, t]); }))
       .catch(e => { this.res[id] = JSON.stringify([0, String(e)]); });
@@ -63,7 +63,7 @@ _pending = {}
 _next_id = 0
 
 
-def api(method, path, body=None):
+def api(method, path, body=None, headers=None):
     """Starts a request to the level server, e.g. api("GET", "/levels/ABC123")."""
     global _next_id
     req = Request()
@@ -76,19 +76,20 @@ def api(method, path, body=None):
         _next_id += 1
         _pending[_next_id] = req
         platform.window.eval(f"vnet.go({_next_id}, {json.dumps(method)}, "
-                             f"{json.dumps(url)}, {json.dumps(data)})")
+                             f"{json.dumps(url)}, {json.dumps(data)}, {json.dumps(headers or {})})")
     else:
-        threading.Thread(target=_desktop, args=(req, method, url, data), daemon=True).start()
+        threading.Thread(target=_desktop, args=(req, method, url, data, headers or {}),
+                         daemon=True).start()
     return req
 
 
-def _desktop(req, method, url, data):
+def _desktop(req, method, url, data, headers):
     import urllib.error
     import urllib.request
     r = urllib.request.Request(url, method=method,
                                data=data.encode() if data else None,
                                headers={"content-type": "application/json",
-                                        "user-agent": "velocity"})
+                                        "user-agent": "velocity", **headers})
     try:
         with urllib.request.urlopen(r, timeout=10) as res:
             req.finish(res.status, res.read().decode())

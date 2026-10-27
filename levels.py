@@ -4,7 +4,11 @@ Player-made levels: the block types, the level file format, running a level
 
 A level is JSON: {"v": 1, "theme": "<palette>", "objs": [[type, x, y, w, h,
 d, p], ...]} where d is a direction (0 up, 1 right, 2 down, 3 left) and p a
-power level 1-5, for the blocks that use them.
+power level 1-5, for the blocks that use them. A saw may have an 8th item, a
+custom path: [[dx, dy], ...] points relative to its centre.
+
+Replays are the inputs of every physics step, run-length encoded (see
+encode_replay); the physics is deterministic, so they play back exactly.
 """
 import json
 import math
@@ -27,6 +31,8 @@ WIND_LIFT = [1200, 1900, 2600, 3300, 4000]   # up/down wind, px/s^2 (gravity is 
 GATE_SPEED = [500, 700, 900, 1100, 1300]
 SAW_RANGE = [64, 128, 192, 256, 384]
 SAW_SPEED = 220
+SAW_PATH_SPEED = [120, 180, 240, 320, 420]   # saws on a custom path, by power
+PATH_MAX = 32
 BLINK_TIME = 1.0          # blink blocks swap this often
 CRUMBLE_DELAY = 0.35      # crumble blocks fall this long after you touch them
 CRUMBLE_BACK = 2.5
@@ -76,7 +82,8 @@ KINDS = {
                  colour=(255, 214, 90), info="Solid unless you hit it at least this fast."),
     "saw": Kind("Saw", "hazard", (32, 32), resize=False, dirs=2,
                 power=("travel", SAW_RANGE), colour=(220, 220, 235),
-                info="Moving kill circle. Direction picks its axis, power its travel."),
+                info="Moving kill circle. Direction picks its axis, power its travel."
+                     " Give it a custom path from the selection bar."),
     "orb": Kind("Dash Orb", "trigger", (24, 24), resize=False, colour=PLAYER_READY,
                 info=f"Refills your dash. Comes back after {ORB_BACK:g}s."),
     "grav": Kind("Gravity Zone", "zone", (192, 192), power=("gravity x", GRAV_MUL),
@@ -100,10 +107,11 @@ SOLID = {k for k, v in KINDS.items() if v.group == "solid"}
 
 
 class Obj:
-    __slots__ = ("t", "x", "y", "w", "h", "d", "p")
+    __slots__ = ("t", "x", "y", "w", "h", "d", "p", "path")
 
-    def __init__(self, t, x, y, w, h, d=0, p=1):
+    def __init__(self, t, x, y, w, h, d=0, p=1, path=None):
         self.t, self.x, self.y, self.w, self.h, self.d, self.p = t, x, y, w, h, d, p
+        self.path = [list(pt) for pt in path] if path else None   # saws only
 
     @property
     def rect(self):
@@ -115,13 +123,18 @@ class Obj:
 
     def power(self):
         k = self.kind
+        if self.path:
+            return SAW_PATH_SPEED[self.p - 1]
         return k.power[1][self.p - 1] if k.power else None
 
     def copy(self):
         return Obj(*self.to_list())
 
     def to_list(self):
-        return [self.t, self.x, self.y, self.w, self.h, self.d, self.p]
+        out = [self.t, self.x, self.y, self.w, self.h, self.d, self.p]
+        if self.path:
+            out.append([list(pt) for pt in self.path])
+        return out
 
 
 def dump(objs, theme):
@@ -134,20 +147,54 @@ def load(text):
     data = json.loads(text) if isinstance(text, str) else text
     objs = []
     for o in data.get("objs", []):
-        if (isinstance(o, list) and len(o) == 7 and o[0] in KINDS
-                and all(isinstance(v, (int, float)) for v in o[1:])):
-            t, x, y, w, h, d, p = o
+        if (isinstance(o, list) and len(o) in (7, 8) and o[0] in KINDS
+                and all(isinstance(v, (int, float)) for v in o[1:7])):
+            t, x, y, w, h, d, p = o[:7]
             if not (abs(x) <= COORD_MAX and abs(y) <= COORD_MAX
                     and 1 <= w <= SIZE_MAX and 1 <= h <= SIZE_MAX):
                 continue
+            path = None
+            if len(o) == 8 and t == "saw" and isinstance(o[7], list):
+                path = [pt for pt in o[7][:PATH_MAX]
+                        if isinstance(pt, list) and len(pt) == 2
+                        and all(isinstance(v, (int, float)) and abs(v) <= COORD_MAX for v in pt)]
             objs.append(Obj(t, x, y, max(1, w), max(1, h), int(d) % 4,
-                            max(1, min(5, int(p)))))
+                            max(1, min(5, int(p))), path))
     theme = data.get("theme")
     return objs, theme if theme in PALETTES else "lowmarket"
 
 
+def saw_points(o):
+    """World points of a saw's custom path, starting at the saw itself."""
+    cx, cy = o.x + o.w / 2, o.y + o.h / 2
+    return [(cx, cy)] + [(cx + dx, cy + dy) for dx, dy in o.path]
+
+
 def saw_center(o, clock):
-    """Saws slide back and forth along their axis from where they're placed."""
+    """Saws slide back and forth along their axis from where they're placed,
+    or follow their custom path: there and back (direction 0) or round in
+    a loop (direction 1)."""
+    if o.path:
+        pts = saw_points(o)
+        if o.d % 2:
+            pts.append(pts[0])
+        segs = [(a, b, math.dist(a, b)) for a, b in zip(pts, pts[1:])]
+        total = sum(L for _, _, L in segs)
+        if total <= 0:
+            return pts[0]
+        dist = clock * o.power()
+        if o.d % 2:
+            dist %= total
+        else:
+            dist %= 2 * total
+            if dist > total:
+                dist = 2 * total - dist
+        for a, b, L in segs:
+            if dist <= L and L > 0:
+                f = dist / L
+                return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+            dist -= L
+        return pts[-1]
     rng = o.power()
     period = 2 * rng / SAW_SPEED
     off = rng * (0.5 - 0.5 * math.cos(clock * math.tau / period))
@@ -189,6 +236,7 @@ class Run:
         self.restart()
 
     def restart(self):
+        self.clock = 0.0            # blinks and saws restart too, so replays match
         self.player.spawn = self.start
         self.checkpoint = None
         self.time = 0.0
@@ -635,11 +683,16 @@ def draw_objects(s, cam, zoom, objs, theme, clock, run=None, hitboxes=False,
             continue
         if run is None:
             # editor: show the path it travels
-            a = (o.x + o.w / 2, o.y + o.h / 2)
-            rng = o.power()
-            b = (a[0] + rng, a[1]) if o.d % 2 else (a[0], a[1] + rng)
-            pygame.draw.line(s, (120, 120, 140), ((a[0] - cam.x) * zoom, (a[1] - cam.y) * zoom),
-                             ((b[0] - cam.x) * zoom, (b[1] - cam.y) * zoom), 2)
+            if o.path:
+                pts = saw_points(o) + ([saw_points(o)[0]] if o.d % 2 else [])
+            else:
+                a = (o.x + o.w / 2, o.y + o.h / 2)
+                rng = o.power()
+                pts = [a, (a[0] + rng, a[1]) if o.d % 2 else (a[0], a[1] + rng)]
+            scr = [((x - cam.x) * zoom, (y - cam.y) * zoom) for x, y in pts]
+            pygame.draw.lines(s, (120, 120, 140), False, scr, 2)
+            for pt in scr[1:]:
+                pygame.draw.circle(s, (120, 120, 140), pt, 4)
         cx, cy = saw_center(o, clock)
         c = ((cx - cam.x) * zoom, (cy - cam.y) * zoom)
         rad = o.w / 2 * zoom
@@ -680,14 +733,55 @@ def level_info_line(o):
     """Short description of an object's settings for the editor."""
     k = o.kind
     bits = [k.name]
-    if k.dirs == 4:
-        bits.append(DIR_NAMES[o.d])
-    elif k.dirs == 2:
-        bits.append("horizontal" if o.d % 2 else "vertical")
-    if k.power:
-        bits.append(f"{k.power[0]} {o.power():g} (power {o.p})")
+    if o.path:
+        bits.append(f"custom path, {len(o.path) + 1} points, "
+                    f"{'loop' if o.d % 2 else 'back and forth'}")
+        bits.append(f"speed {o.power()} (power {o.p})")
+    else:
+        if k.dirs == 4:
+            bits.append(DIR_NAMES[o.d])
+        elif k.dirs == 2:
+            bits.append("horizontal" if o.d % 2 else "vertical")
+        if k.power:
+            bits.append(f"{k.power[0]} {o.power():g} (power {o.p})")
     bits.append(f"{o.w:g}x{o.h:g} at {o.x:g}, {o.y:g}")
     return "   ".join(bits)
+
+
+# ---------------------------------------------------------------- replays ---
+REPLAY_KEYS = ("left", "right", "up", "down", "jump_held", "jump_pressed", "dash_pressed")
+
+
+def input_mask(inp):
+    return sum(1 << i for i, k in enumerate(REPLAY_KEYS) if getattr(inp, k))
+
+
+def apply_mask(inp, mask):
+    for i, k in enumerate(REPLAY_KEYS):
+        setattr(inp, k, bool(mask >> i & 1))
+
+
+def encode_replay(masks):
+    """[mask per step] -> compact "mask*count,..." text."""
+    out = []
+    for m in masks:
+        if out and out[-1][0] == m:
+            out[-1][1] += 1
+        else:
+            out.append([m, 1])
+    return ",".join(f"{m}*{n}" if n > 1 else str(m) for m, n in out)
+
+
+def decode_replay(text):
+    masks = []
+    for part in text.split(","):
+        if not part:
+            continue
+        m, _, n = part.partition("*")
+        masks.extend([int(m)] * int(n or 1))
+        if len(masks) > 120 * 60 * 60:          # an hour of steps is plenty
+            break
+    return masks
 
 
 __all__ = ["KINDS", "ORDER", "Obj", "Run", "dump", "load", "draw_objects", "fmt_time",

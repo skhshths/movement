@@ -31,9 +31,10 @@ from collections import deque
 import pygame
 
 import net
-from levels import KINDS, ORDER, SIZE_MAX, Obj, Run, draw_objects, dump, level_info_line, load
+from levels import (KINDS, ORDER, PATH_MAX, SIZE_MAX, Obj, Run, draw_objects, dump,
+                    level_info_line, load)
 from player import DASH_SPEED, DASH_TIME, GRAVITY, JUMP_V, RUN_SPEED, Input, Player
-from scenes import Menu, Play, draw_level_hud, hovered, level_camera
+from scenes import Menu, Play, admin_code, draw_level_hud, hovered, level_camera
 from ui import (DIM, GOLD, GREEN, INK, PANEL, RED, TEXT, TextBox, button, draw_panel, draw_sky,
                 fmt_time, shade_screen, tint_rect)
 from world import PALETTES, mix
@@ -58,14 +59,21 @@ def new_level():
 
 
 class Editor:
-    def __init__(self, app):
+    def __init__(self, app, level=None):
+        """Opens the saved draft, or `level` (objs, theme, title, link) to
+        edit one you published. `link` ({id, token}) makes Publish update
+        that level instead of making a new one."""
         self.app = app
+        self.objs, self.theme, self.title, self.link = new_level(), "lowmarket", "", None
         draft = net.load("draft")
-        self.objs, self.theme, self.title = new_level(), "lowmarket", ""
-        if draft:
+        if level:
+            self.objs, self.theme = level["objs"], level["theme"]
+            self.title, self.link = level["title"], level["link"]
+        elif draft:
             try:
                 self.objs, self.theme = load(draft["data"])
                 self.title = draft.get("name", "")
+                self.link = draft.get("link")
             except (ValueError, KeyError, TypeError):
                 pass
         self.zoom = 1.0
@@ -82,6 +90,7 @@ class Editor:
         self.undo_stack, self.redo_stack = [], []
         self.clip = []
         self.pasting = False    # clipboard follows the mouse; click to place it
+        self.path_edit = None   # index of the saw whose path is being drawn
         self.sel_buttons = {}   # copy / cut / duplicate / delete over the selection
         self.drag = None
         self.panning = False
@@ -154,7 +163,8 @@ class Editor:
             self.restore(self.redo_stack.pop())
 
     def save_draft(self):
-        net.save("draft", {"name": self.title, "data": dump(self.objs, self.theme)})
+        net.save("draft", {"name": self.title, "data": dump(self.objs, self.theme),
+                           "link": self.link})
         self.dirty_t = None
 
     def pick(self, wpos):
@@ -265,7 +275,49 @@ class Editor:
         self.copy()
         self.start_paste()
 
+    def start_path(self):
+        i = next(iter(self.sel))
+        self.push_undo()
+        self.objs[i].path = self.objs[i].path or []
+        self.path_edit = i
+
+    def end_path(self):
+        o = self.objs[self.path_edit]
+        if not o.path:
+            o.path = None
+        self.path_edit = None
+        self.sel = {self.objs.index(o)}
+
+    def path_event(self, e):
+        """Drawing a saw's path: click adds a point, right-click removes the
+        last, R switches loop / back and forth, ENTER or ESC finishes."""
+        o = self.objs[self.path_edit]
+        if e.type == pygame.KEYDOWN:
+            if e.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+                self.end_path()
+            elif e.key == pygame.K_r:
+                o.d = (o.d + 1) % 2
+            elif e.key == pygame.K_RIGHTBRACKET:
+                o.p = min(5, o.p + 1)
+            elif e.key == pygame.K_LEFTBRACKET:
+                o.p = max(1, o.p - 1)
+        elif e.type == pygame.MOUSEMOTION:
+            self.mouse = e.pos
+        elif e.type == pygame.MOUSEBUTTONDOWN:
+            self.mouse = e.pos
+            if self.in_ui(e.pos):
+                return
+            if e.button == 1 and len(o.path) < PATH_MAX:
+                wpos = self.to_world(e.pos)
+                cx, cy = o.x + o.w / 2, o.y + o.h / 2
+                o.path.append([self.snap(wpos.x) - cx, self.snap(wpos.y) - cy])
+            elif e.button == 3 and o.path:
+                o.path.pop()
+
     def selection_button(self, name):
+        if name == "path":
+            self.start_path()
+            return
         if name == "copy":
             self.copy()
         elif name == "cut":
@@ -338,6 +390,9 @@ class Editor:
             self.step_once = True
 
     def edit_event(self, e):
+        if self.path_edit is not None:
+            self.path_event(e)
+            return
         mods = pygame.key.get_mods()
         ctrl = mods & (pygame.KMOD_CTRL | pygame.KMOD_META)
         shift = mods & pygame.KMOD_SHIFT
@@ -492,6 +547,7 @@ class Editor:
                     self.objs = new_level()
                     self.sel.clear()
                     self.title = ""
+                    self.link = None        # a new level, not an update
                     self.home()
                 elif name == "menu":
                     self.leave()
@@ -618,8 +674,13 @@ class Editor:
             net.save("name", self.app.name)
             self.save_draft()
             m["error"] = None
-            m["req"] = net.api("POST", "/levels", {"name": name, "author": self.app.name or "Anonymous",
-                                                   "data": dump(self.objs, self.theme)})
+            body = {"name": name, "author": self.app.name or "Anonymous",
+                    "data": dump(self.objs, self.theme)}
+            if self.link:
+                body.update(self.link)      # update the published level in place
+            if admin_code(self.app):
+                body["code"] = admin_code(self.app)
+            m["req"] = net.api("POST", "/levels", body)
         else:
             m[m["field"]].key(e)
 
@@ -632,8 +693,11 @@ class Editor:
                 m["error"] = req.error
             else:
                 m["result"] = req.data["id"]
-                mine = net.load("published", []) or []
-                mine.insert(0, {"id": m["result"], "name": self.title})
+                m["updated"] = req.data.get("updated", False)
+                self.link = {"id": req.data["id"], "token": req.data["token"]}
+                self.save_draft()
+                mine = [lv for lv in net.load("published", []) or [] if lv["id"] != m["result"]]
+                mine.insert(0, {"id": m["result"], "name": self.title, "token": req.data["token"]})
                 net.save("published", mine[:50])
 
     # -- update -----------------------------------------------------------------
@@ -696,7 +760,9 @@ class Editor:
             self.draw_holo(s, f)
         self.draw_handles(s)
         on_bar = any(r.collidepoint(self.mouse) for r in self.sel_buttons.values())
-        if self.pasting and not self.in_ui(self.mouse):
+        if self.path_edit is not None:
+            self.draw_path_edit(s, f)
+        elif self.pasting and not self.in_ui(self.mouse):
             self.draw_paste_ghost(s, f)
         elif not self.in_ui(self.mouse) and not self.panning and not on_bar:
             self.draw_cursor(s, f)
@@ -771,6 +837,24 @@ class Editor:
         draw_panel(s, box.inflate(10, 6), 200, radius=6)
         s.blit(img, box)
 
+    def draw_path_edit(self, s, f):
+        o = self.objs[self.path_edit]
+        cx, cy = o.x + o.w / 2, o.y + o.h / 2
+        pts = [(cx, cy)] + [(cx + dx, cy + dy) for dx, dy in o.path]
+        if not self.in_ui(self.mouse):
+            wpos = self.to_world(self.mouse)
+            nxt = (self.snap(wpos.x), self.snap(wpos.y))
+            pygame.draw.line(s, GOLD, self.to_screen(*pts[-1]), self.to_screen(*nxt), 1)
+            pygame.draw.circle(s, GOLD, self.to_screen(*nxt), 5, 1)
+        scr = [self.to_screen(*pt) for pt in pts]
+        if len(scr) > 1:
+            pygame.draw.lines(s, GOLD, o.d % 2 == 1, scr, 3)
+        for k, pt in enumerate(scr):
+            pygame.draw.circle(s, GOLD, pt, 6 if k else 9, 0 if k else 2)
+        mode = "loop" if o.d % 2 else "back and forth"
+        self.label(s, f, f"click: add point   right-click: remove last   R: {mode}   "
+                         f"[ ]: speed {o.power()}   ENTER: done", self.mouse, GOLD)
+
     def draw_paste_ghost(self, s, f):
         dx, dy = self.paste_offset()
         for o in self.clip:
@@ -785,13 +869,16 @@ class Editor:
     def draw_selection_bar(self, s, f):
         """Copy / cut / duplicate / delete buttons just above the selection."""
         self.sel_buttons = {}
-        if not self.sel or self.drag or self.pasting or self.tool != "select":
+        if (not self.sel or self.drag or self.pasting or self.tool != "select"
+                or self.path_edit is not None):
             return
         boxes = [self.objs[i].rect for i in self.sel]
         x, y = self.to_screen(min(r.left for r in boxes), min(r.top for r in boxes))
         w, h = s.get_size()
         bw, bh, gap = 92, 28, 6
         names = (("copy", "Copy"), ("cut", "Cut"), ("duplicate", "Duplicate"), ("delete", "Delete"))
+        if len(self.sel) == 1 and self.objs[next(iter(self.sel))].t == "saw":
+            names += (("path", "Path"),)
         total = len(names) * (bw + gap)
         x = max(SIDEBAR_W + 8, min(x, w - total - 8))
         y = max(TOPBAR_H + 8, min(y - bh - 10, h - BOTTOMBAR_H - bh - 40))
@@ -940,6 +1027,8 @@ class Editor:
         hover = self.pick(wpos) if not self.in_ui(self.mouse) else None
         if len(idxs) == 1:
             line = level_info_line(self.objs[idxs[0]]) + "    R rotate  [ ] power  CTRL+C copy"
+        elif self.path_edit is not None:
+            line = "Saw path: click to add points, right-click removes the last, R loop / back and forth, ENTER done"
         elif self.pasting:
             line = "Pasting: click to place copies, ESC or right-click when done"
         elif idxs:
@@ -978,20 +1067,26 @@ class Editor:
         draw_panel(s, box, 245)
         pygame.draw.rect(s, GOLD, box, 2, border_radius=12)
         if m["result"]:
-            head = f.big.render("Published!", True, GREEN)
+            head = f.big.render("Updated!" if m.get("updated") else "Published!", True, GREEN)
             s.blit(head, head.get_rect(midtop=(box.centerx, box.y + 30)))
             code = f.title.render(m["result"], True, GOLD)
             s.blit(code, code.get_rect(center=(box.centerx, box.y + 150)))
             for i, line in enumerate(("Anyone can play it with this ID.",
                                       "The first person to beat it verifies it and",
-                                      "puts it on the public level list.")):
+                                      "puts it on the public level list." if not m.get("updated")
+                                      else "puts it back on the public level list.")):
                 img = f.font.render(line, True, TEXT)
                 s.blit(img, img.get_rect(midtop=(box.centerx, box.y + 220 + i * 24)))
             hint = f.font.render("ENTER play it now    ESC keep editing", True, DIM)
             s.blit(hint, hint.get_rect(midbottom=(box.centerx, box.bottom - 18)))
             return
-        head = f.big.render("Publish level", True, GOLD)
+        head = f.big.render(f"Update level {self.link['id']}" if self.link else "Publish level",
+                            True, GOLD)
         s.blit(head, head.get_rect(midtop=(box.centerx, box.y + 24)))
+        if self.link:
+            note = f.small.render("Updating unverifies it and resets its clears, record and rating.",
+                                  True, DIM)
+            s.blit(note, note.get_rect(midtop=(box.centerx, box.y + 70)))
         for i, (key, label) in enumerate((("name", "Level name"), ("author", "Your name"))):
             r = pygame.Rect(box.x + 30, box.y + 120 + i * 100, box.w - 60, 54)
             tb = m[key]

@@ -195,7 +195,8 @@ class TextBox:
     """A one-line text field: typed characters arrive as TEXTINPUT events
     (on desktop and in the browser), backspace as KEYDOWN."""
 
-    def __init__(self, value="", limit=24, allowed=None, upper=False):
+    def __init__(self, value="", limit=24, allowed=None, upper=False, mask=False):
+        self.mask = mask            # show * instead of the text (codes)
         self.value = value
         self.limit = limit
         self.allowed = allowed
@@ -223,7 +224,7 @@ class TextBox:
         draw_panel(s, rect, 235)
         pygame.draw.rect(s, GOLD, rect, 2, border_radius=12)
         font = font or fonts.big
-        img = font.render(self.value, True, TEXT)
+        img = font.render("*" * len(self.value) if self.mask else self.value, True, TEXT)
         r = img.get_rect(midleft=(rect.x + 18, rect.centery))
         s.blit(img, r)
         if int(time * 2.5) % 2 == 0:
