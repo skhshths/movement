@@ -36,6 +36,8 @@ With it you can rate levels, watch a level's verifying clear, delete levels
 and see unverified levels under Browse. The code is checked by the server
 against the Worker secret `ADMIN_CODE` (Cloudflare dashboard: the Worker's
 Settings, Variables and Secrets, type Secret). It is never in this repo.
+`keep_vars` in `wrangler.jsonc` stops deploys from wiping it if it was saved
+as plain text instead.
 
 **Play in the browser:** https://movement.oliverbar.net
 

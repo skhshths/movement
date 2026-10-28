@@ -5,6 +5,9 @@
   "name": "movement",
   "main": "worker/index.js",
   "compatibility_date": "2025-09-01",
+  // keep variables set in the Cloudflare dashboard (like ADMIN_CODE) when a
+  // push redeploys, instead of resetting them to what's in this file
+  "keep_vars": true,
   "assets": {
     "directory": "./build/web",
     "binding": "ASSETS"
