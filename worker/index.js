@@ -4,9 +4,10 @@
 // player-made levels. Levels live in one SQLite-backed Durable Object, which
 // Cloudflare creates on the first deploy.
 //
-//   POST /api/levels                publish {name, author, data}, or update
+//   POST /api/levels                publish {name, author, data, proposed}, or update
 //                                   one {id, token, ...} -> {id, token}
-//   GET  /api/levels?sort=&offset=  verified levels: new, top or hard
+//   GET  /api/levels?sort=&offset=  verified levels: new, top or hard; or
+//                                   unverified ones (sort=unverified)
 //   GET  /api/levels/:id            one level, including its data
 //   POST /api/levels/:id/clear      report a clear {time, deaths, name,
 //                                   replay}; the first one verifies the
@@ -22,7 +23,8 @@
 //
 // Names are unique. Updating a level (with the token handed out when it was
 // published) unverifies it and resets its clears, record, rating and replay.
-// Ratings run 1-40: eight tiers of five, see ratings.py.
+// Ratings run 1-40: eight tiers of five, see ratings.py. "proposed" is the
+// difficulty the creator picked when publishing.
 import { DurableObject } from "cloudflare:workers";
 
 const ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // no 0/O or 1/I
@@ -46,7 +48,8 @@ const KINDS = new Set(["wall", "kill", "bounce", "boost", "ice", "oneway", "crum
   "blinkB", "gate", "saw", "orb", "grav", "wind", "nodash", "check", "start", "finish"]);
 // what any listing or level fetch may show; token and replay stay private
 const PUBLIC = `id, name, author, created, updated, verified, verified_by, verified_at, plays,
-  clears, best, best_by, rating, sugg_sum, sugg_count, replay IS NOT NULL AS has_replay`;
+  clears, best, best_by, rating, proposed, sugg_sum, sugg_count,
+  replay IS NOT NULL AS has_replay`;
 
 const HEADERS = {
   "content-type": "application/json",
@@ -163,7 +166,8 @@ export class LevelStore extends DurableObject {
     const have = new Set(this.sql.exec("PRAGMA table_info(levels)").toArray().map((c) => c.name));
     for (const [col, type] of [["token", "TEXT"], ["updated", "INTEGER"], ["rating", "INTEGER"],
                                ["replay", "TEXT"], ["sugg_sum", "INTEGER NOT NULL DEFAULT 0"],
-                               ["sugg_count", "INTEGER NOT NULL DEFAULT 0"]]) {
+                               ["sugg_count", "INTEGER NOT NULL DEFAULT 0"],
+                               ["proposed", "INTEGER"]]) {
       if (!have.has(col)) this.sql.exec(`ALTER TABLE levels ADD COLUMN ${col} ${type}`);
     }
     // admin code attempts, kept in storage so they survive restarts
@@ -200,7 +204,7 @@ export class LevelStore extends DurableObject {
       name, exceptId || "").toArray().length > 0;
   }
 
-  publish(name, author, data, addr, id, token, admin) {
+  publish(name, author, data, proposed, addr, id, token, admin) {
     const now = Date.now();
     const times = (this.recent.get(addr) || []).filter((t) => now - t < 3600_000);
     if (times.length >= PUBLISH_LIMIT && !admin) return { error: "publishing too fast, try later", status: 429 };
@@ -213,10 +217,10 @@ export class LevelStore extends DurableObject {
       if (this.nameTaken(name, id)) return { error: "another level already has that name", status: 409 };
       times.push(now);
       this.recent.set(addr, times);
-      this.sql.exec(`UPDATE levels SET name = ?, data = ?, updated = ?, verified = 0,
-          verified_by = NULL, verified_at = NULL, clears = 0, best = NULL, best_by = NULL,
-          rating = NULL, replay = NULL, sugg_sum = 0, sugg_count = 0 WHERE id = ?`,
-        name, data, now, id);
+      this.sql.exec(`UPDATE levels SET name = ?, data = ?, proposed = ?, updated = ?,
+          verified = 0, verified_by = NULL, verified_at = NULL, clears = 0, best = NULL,
+          best_by = NULL, rating = NULL, replay = NULL, sugg_sum = 0, sugg_count = 0
+          WHERE id = ?`, name, data, proposed, now, id);
       return { id, token: rows[0].token || token, updated: true };
     }
     if (this.nameTaken(name)) return { error: "another level already has that name", status: 409 };
@@ -226,8 +230,8 @@ export class LevelStore extends DurableObject {
       id = randomString(ID_LEN);
     } while (this.sql.exec("SELECT 1 FROM levels WHERE id = ?", id).toArray().length);
     token = randomString(24);
-    this.sql.exec(`INSERT INTO levels (id, name, author, data, created, token)
-        VALUES (?, ?, ?, ?, ?, ?)`, id, name, author, data, now, token);
+    this.sql.exec(`INSERT INTO levels (id, name, author, data, proposed, created, token)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`, id, name, author, data, proposed, now, token);
     return { id, token };
   }
 
@@ -244,12 +248,13 @@ export class LevelStore extends DurableObject {
   }
 
   list(sort, offset, all) {
+    const unverified = sort === "unverified" && !all;
     const order = {
       top: "clears DESC, verified_at DESC",
       hard: "rating IS NULL, rating DESC, verified_at DESC",
       old: "created ASC",
-    }[sort] || (all ? "created DESC" : "verified_at DESC");
-    const where = all ? "" : "WHERE verified = 1";
+    }[sort] || (all || unverified ? "created DESC" : "verified_at DESC");
+    const where = all ? "" : unverified ? "WHERE verified = 0" : "WHERE verified = 1";
     const levels = this.sql.exec(`SELECT ${PUBLIC} FROM levels ${where} ORDER BY ${order}
        LIMIT ? OFFSET ?`, PAGE, offset).toArray();
     const total = this.sql.exec(`SELECT COUNT(*) AS n FROM levels ${where}`).one().n;
@@ -348,7 +353,9 @@ async function api(request, env, store, path) {
       const problem = checkLevel(body.data);
       if (problem) return reply({ error: problem }, 400);
       const id = body.id ? clean(body.id, ID_LEN).toUpperCase() : null;
-      const out = await store.publish(name, author, body.data, addr, id, clean(body.token, 64), admin);
+      const proposed = validRating(body.proposed, false) ? body.proposed : null;
+      const out = await store.publish(name, author, body.data, proposed, addr, id,
+        clean(body.token, 64), admin);
       return reply(out, out.status || 200);
     }
   }

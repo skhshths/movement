@@ -31,6 +31,7 @@ from collections import deque
 import pygame
 
 import net
+import ratings
 from levels import (KINDS, ORDER, PATH_MAX, SIZE_MAX, Obj, Run, draw_objects, dump,
                     level_info_line, load)
 from player import (DASH_SPEED, DASH_TIME, FULL_JUMP, GRAVITY, JUMP_V, RUN_SPEED, TAP_HOP, Input,
@@ -66,15 +67,18 @@ class Editor:
         that level instead of making a new one."""
         self.app = app
         self.objs, self.theme, self.title, self.link = new_level(), "lowmarket", "", None
+        self.proposed = 0          # the difficulty you said it is when publishing
         draft = net.load("draft")
         if level:
             self.objs, self.theme = level["objs"], level["theme"]
             self.title, self.link = level["title"], level["link"]
+            self.proposed = level.get("proposed") or 0
         elif draft:
             try:
                 self.objs, self.theme = load(draft["data"])
                 self.title = draft.get("name", "")
                 self.link = draft.get("link")
+                self.proposed = draft.get("proposed") or 0
             except (ValueError, KeyError, TypeError):
                 pass
         self.zoom = 1.0
@@ -165,7 +169,7 @@ class Editor:
 
     def save_draft(self):
         net.save("draft", {"name": self.title, "data": dump(self.objs, self.theme),
-                           "link": self.link})
+                           "link": self.link, "proposed": self.proposed})
         self.dirty_t = None
 
     def pick(self, wpos):
@@ -644,10 +648,23 @@ class Editor:
         elif not any(o.t == "finish" for o in self.objs):
             problem = "Your level needs a finish."
         self.modal = dict(name=TextBox(self.title, 40), author=TextBox(self.app.name, 24),
-                          field="name", req=None, result=None, error=problem)
+                          field="name", req=None, result=None, error=problem,
+                          stage="fields", picker={})
 
     def modal_event(self, e):
         m = self.modal
+        if e.type == pygame.MOUSEMOTION:
+            self.mouse = e.pos
+        if m["stage"] == "difficulty" and not m["result"]:
+            # second step: how hard is it? clicking a difficulty publishes
+            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and not m["req"]:
+                r = next((r for r, rect in m["picker"].items() if rect.collidepoint(e.pos)), None)
+                if r:
+                    self.proposed = r
+                    self.publish()
+            elif e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE and not m["req"]:
+                m["stage"] = "fields"
+            return
         if e.type == pygame.TEXTINPUT and not m["result"]:
             m[m["field"]].key(e)
         if e.type != pygame.KEYDOWN:
@@ -675,15 +692,21 @@ class Editor:
             net.save("name", self.app.name)
             self.save_draft()
             m["error"] = None
-            body = {"name": name, "author": self.app.name or "Anonymous",
-                    "data": dump(self.objs, self.theme)}
-            if self.link:
-                body.update(self.link)      # update the published level in place
-            if admin_code(self.app):
-                body["code"] = admin_code(self.app)
-            m["req"] = net.api("POST", "/levels", body)
+            m["stage"] = "difficulty"
         else:
             m[m["field"]].key(e)
+
+    def publish(self):
+        m = self.modal
+        self.save_draft()
+        body = {"name": self.title, "author": self.app.name or "Anonymous",
+                "data": dump(self.objs, self.theme), "proposed": self.proposed}
+        if self.link:
+            body.update(self.link)      # update the published level in place
+        if admin_code(self.app):
+            body["code"] = admin_code(self.app)
+        m["error"] = None
+        m["req"] = net.api("POST", "/levels", body)
 
     def modal_step(self):
         m = self.modal
@@ -692,6 +715,7 @@ class Editor:
             m["req"] = None
             if req.error:
                 m["error"] = req.error
+                m["stage"] = "fields"      # e.g. the name is taken: fix it there
             else:
                 m["result"] = req.data["id"]
                 m["updated"] = req.data.get("updated", False)
@@ -1072,6 +1096,9 @@ class Editor:
         w, h = s.get_size()
         m = self.modal
         shade_screen(s, 170)
+        if m["stage"] == "difficulty" and not m["result"]:
+            self.draw_difficulty_step(s, f, m)
+            return
         box = pygame.Rect(0, 0, 620, 360)
         box.center = (w / 2, h / 2)
         draw_panel(s, box, 245)
@@ -1111,9 +1138,26 @@ class Editor:
         elif m["error"]:
             msg, col = m["error"], RED
         else:
-            msg, col = "ENTER publish    TAB switch field    ESC cancel", DIM
+            msg, col = "ENTER next    TAB switch field    ESC cancel", DIM
         img = f.font.render(msg, True, col)
         s.blit(img, img.get_rect(midbottom=(box.centerx, box.bottom - 18)))
+
+    def draw_difficulty_step(self, s, f, m):
+        w, h = s.get_size()
+        head = f.big.render("How hard is it?", True, GOLD)
+        s.blit(head, head.get_rect(center=(w / 2, h / 2 - 230)))
+        note = f.font.render("Your guess, shown with the level. The admin sets the official rating.",
+                             True, DIM)
+        s.blit(note, note.get_rect(center=(w / 2, h / 2 - 192)))
+        m["picker"] = ratings.picker(s, f, (w / 2, h / 2 + 10), self.mouse, self.proposed)
+        if m["req"]:
+            msg, col = "Publishing...", DIM
+        elif m["error"]:
+            msg, col = m["error"], RED
+        else:
+            msg, col = "Click a difficulty to publish    ESC back", DIM
+        img = f.font.render(msg, True, col)
+        s.blit(img, img.get_rect(center=(w / 2, h / 2 + 200)))
 
     def draw_test(self, s, f):
         run = self.test

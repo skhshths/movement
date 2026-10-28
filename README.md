@@ -18,14 +18,16 @@ It opens on a menu:
   frame stepping. Press **Keys** in the editor for every shortcut.
 - **Play Level by ID**: every published level gets a six-character ID.
 - **Browse Levels**: the public list. A level only appears here once someone
-  has beaten it, and it shows its rating, clears and the record time.
+  has beaten it, and it shows its difficulty, clears and the record time. The
+  **Unverified** tab lists levels nobody has beaten yet.
 
 Level names are unique. Publishing from a level you published before (the
 editor remembers, or use **Edit** under Play by ID) updates it in place: same
 ID, but it's unverified again and its clears, record and rating reset.
 
-The first clear of a level uploads a recording of it. Anyone who clears a
-level can suggest a difficulty; the admin sets the official rating, from
+The first clear of a level uploads a recording of it. Creators pick a
+proposed difficulty when they publish, anyone who clears a level can suggest
+one, and the admin sets the official rating, from
 Easy 1 up through Medium, Hard, Expert, Insane, Extreme and Impossible to
 Legendary 5 (see `ratings.py`).
 

@@ -51,12 +51,25 @@ def hovered(rects, pos):
 
 
 def rating_text(level):
-    """"Hard 3 (players say Expert 1)" for a level dict from the server."""
+    """"Hard 3   creator says Hard 2   players say Expert 1" for a level
+    dict from the server."""
     text = ratings.name(level.get("rating"))
+    if level.get("proposed"):
+        text += f"   creator says {ratings.name(level['proposed'])}"
     sugg = ratings.suggested(level)
     if sugg:
-        text += f"   (players say {ratings.name(sugg)})"
+        text += f"   players say {ratings.name(sugg)}"
     return text
+
+
+def list_rating(level):
+    """Rating column text and colour: the official rating, else the
+    creator's proposed difficulty, marked as theirs."""
+    if level.get("rating"):
+        return ratings.name(level["rating"]), ratings.colour(level["rating"])
+    if level.get("proposed"):
+        return f"{ratings.name(level['proposed'])} (creator)", ratings.colour(level["proposed"])
+    return "Unrated", DIM
 
 
 # ------------------------------------------------------------------ menu ---
@@ -255,7 +268,8 @@ class IdEntry:
             objs, theme = load(req.data["data"])
             link = {"id": entry["id"], "token": entry["token"]} if entry.get("token") else None
             self.app.go(editor.Editor(self.app, dict(objs=objs, theme=theme,
-                                                     title=req.data["name"], link=link)))
+                                                     title=req.data["name"], link=link,
+                                                     proposed=req.data.get("proposed"))))
 
     def draw(self, s):
         f = self.app.fonts
@@ -292,7 +306,8 @@ class IdEntry:
 # --------------------------------------------------------------- browse ---
 class Browse:
     ROW = 52
-    SORTS = [("new", "Newest"), ("top", "Most cleared"), ("hard", "Hardest")]
+    SORTS = [("new", "Newest"), ("top", "Most cleared"), ("hard", "Hardest"),
+             ("unverified", "Unverified")]
 
     def __init__(self, app):
         self.app = app
@@ -379,8 +394,9 @@ class Browse:
         pal = menu_backdrop(s, self.t, 130)
         head = f.huge.render("LEVELS", True, TEXT)
         s.blit(head, head.get_rect(midtop=(w / 2, 30)))
-        sub = ("Every level, newest first, including unverified ones." if self.sort == "all"
-               else "Every level here has been beaten at least once.")
+        sub = {"all": "Every level, newest first, including unverified ones.",
+               "unverified": "Nobody has beaten these yet. Be the first and verify one!"
+               }.get(self.sort, "Every level here has been beaten at least once.")
         sub = f.font.render(sub, True, DIM)
         s.blit(sub, sub.get_rect(midtop=(w / 2, 100)))
         self.tab_rects = []
@@ -393,8 +409,8 @@ class Browse:
         pw = min(1100, w - 40)
         area = pygame.Rect((w - pw) // 2, 190, pw, h - 250)
         draw_panel(s, area, 170)
-        cols = [("ID", 16), ("NAME", 110), ("BY", 0.42), ("RATING", 0.56), ("CLEARS", 0.73),
-                ("BEST", 0.82)]
+        cols = [("ID", 16), ("NAME", 110), ("BY", 0.38), ("DIFFICULTY", 0.51), ("CLEARS", 0.75),
+                ("BEST", 0.83)]
 
         def cx(c):
             return area.x + (c if c > 1 else c * area.w)
@@ -424,15 +440,14 @@ class Browse:
             sel = i == self.sel
             draw_panel(s, r, 220 if sel else 120, mix(PANEL, pal["accent"], 0.25) if sel else PANEL, 8)
             yy = r.centery
-            if lv.get("verified", 1):
-                rating, rcol = ratings.name(lv.get("rating")), ratings.colour(lv.get("rating"))
-            else:
-                rating, rcol = "unverified", DIM
+            rating, rcol = list_rating(lv)
+            if self.sort == "all" and not lv.get("verified", 1):
+                rating = "unverified  " + rating
             for text, c, col, font, limit_to in (
-                    (lv["id"], 16, GOLD, f.mid, None), (lv["name"], 110, TEXT, f.mid, 0.42),
-                    (lv["author"], 0.42, DIM, f.font, 0.56), (rating, 0.56, rcol, f.font, 0.73),
-                    (str(lv["clears"]), 0.73, TEXT, f.font, None),
-                    (f"{fmt_time(lv['best'])}  {lv.get('best_by') or ''}", 0.82, PLAYER_READY,
+                    (lv["id"], 16, GOLD, f.mid, None), (lv["name"], 110, TEXT, f.mid, 0.38),
+                    (lv["author"], 0.38, DIM, f.font, 0.51), (rating, 0.51, rcol, f.font, 0.75),
+                    (str(lv["clears"]), 0.75, TEXT, f.font, None),
+                    (f"{fmt_time(lv['best'])}  {lv.get('best_by') or ''}", 0.83, PLAYER_READY,
                      f.font, None)):
                 img = font.render(text, True, col)
                 if limit_to:
@@ -447,7 +462,8 @@ class Browse:
         elif self.req and not self.levels:
             msg = ("Loading...", DIM)
         elif not self.levels:
-            msg = ("No verified levels yet. Make one and beat it!", DIM)
+            msg = ("No unverified levels right now." if self.sort == "unverified"
+                   else "No verified levels yet. Make one and beat it!", DIM)
         if msg:
             img = f.mid.render(msg[0], True, msg[1])
             s.blit(img, img.get_rect(center=area.center))
