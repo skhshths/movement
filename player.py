@@ -30,6 +30,9 @@ MANEUVERS
                  jump that keeps the slide speed.
   Slide          Hold S while running fast. Very low friction.
 
+  Tap Hop        Tap jump quickly: you hop exactly your own height, so your
+                 feet land where your head was. Hold it for a full jump.
+
   Plain WASD movement is exact on the ground and in the air: full speed
   instantly, a dead stop when you let go, instant turns. Only speed beyond a
   run, which comes from moves, carries momentum and drifts.
@@ -87,6 +90,10 @@ FRICTION = 3000            # momentum bleeding off with no input
 AIR_LOCK = 0.15            # air control ignored this long after a kick-off
 OVERSPEED_FRICTION = 900   # bleeding off speed above RUN_SPEED on the ground
 JUMP_V = 780
+TAP_HOP = 32               # a quick tap of jump rises exactly this (the player's height)
+TAP_TIME = 0.07            # released within this it's a tap; held longer, a full jump
+# full jump height, kept exactly as it was before the tap hop (fixed-step peak)
+FULL_JUMP = JUMP_V ** 2 / (2 * GRAVITY) + JUMP_V * DT / 2
 COYOTE = 0.10
 JUMP_BUFFER = 0.10
 
@@ -167,6 +174,13 @@ def sign(v):
     return (v > 0) - (v < 0)
 
 
+def launch_speed(height, g, dt):
+    """Upward speed that peaks `height` above where it's set, for this
+    fixed-step integration (the step it's set in moves without gravity)."""
+    a = g * dt / 2
+    return -a + math.sqrt(a * a + 2 * g * height)
+
+
 def approach(v, target, amount):
     if v < target:
         return min(v + amount, target)
@@ -231,6 +245,7 @@ class Player:
         self.sling_dir = self.rico_dir = 0
         self.rico_speed = 0.0
         self.jump_cut_ok = False
+        self.cancel_hop()
         self.bhop_chain = 0
         self.events = []
         self.shake = 0.0
@@ -282,6 +297,14 @@ class Player:
         self.vy *= 0.45 if self.vy < 0 else 0.7
 
     # -- per-step update -----------------------------------------------------
+    def cancel_hop(self):
+        self.hop_t = 0.0           # time left to decide tap or full jump
+        self.hop_lock = False      # tapped: stop at exactly TAP_HOP
+        self.hop_base = 0.0        # feet height at take-off
+
+    def gravity(self):
+        return GRAVITY * self.grav_mul - self.lift
+
     def lerp_rect(self, alpha):
         """Where to draw the player between the last two physics steps,
         so motion is smooth at any display refresh rate."""
@@ -343,6 +366,7 @@ class Player:
                 self.dashes -= 1
                 self.dash_from_air = not self.on_ground
                 self.jump_cut_ok = False
+                self.cancel_hop()
                 self.hanging = False
 
         if self.dashing:
@@ -368,6 +392,19 @@ class Player:
             if self.wall and mx == self.wall and self.vy > WALL_SLIDE_MAX \
                     and not inp.down:
                 self.vy = WALL_SLIDE_MAX
+            if self.hop_t > 0:
+                self.hop_t -= dt
+                if not inp.jump_held:
+                    # a tap: finish the hop at exactly one player height
+                    self.hop_t = 0.0
+                    self.hop_lock = True
+                elif self.hop_t <= 0:
+                    # held: carry on into a full jump, as high as ever
+                    # (speeds are worked out for normal gravity, so gravity
+                    # and wind zones still change how high you go)
+                    risen = self.hop_base - self.rect.bottom
+                    self.vy = -launch_speed(max(0.0, FULL_JUMP - risen), GRAVITY, dt)
+                    self.jump_cut_ok = True
             if self.jump_cut_ok and not inp.jump_held and self.vy < 0:
                 self.vy *= 0.5
                 self.jump_cut_ok = False
@@ -377,6 +414,8 @@ class Player:
 
         prev_wall = self.wall
         self.move(dt, solids)
+        if self.hop_lock:
+            self.hop_apex(solids)
         if not self.on_ground:
             self.corner_whip(prev_wall, mx, solids)
             self.ledge_grab(mx, solids)
@@ -385,6 +424,8 @@ class Player:
         if self.on_ground:
             self.coyote = COYOTE
             self.hanging = False
+            if self.vy >= 0:
+                self.cancel_hop()
             if not self.dashing:
                 self.dashes = MAX_DASHES
             if (inp.down and abs(self.vx) > SLIDE_START and not self.dashing
@@ -480,6 +521,15 @@ class Player:
                 self.vx += sign(self.vx) * BHOP_BONUS
                 self.vy = -JUMP_V
                 name = f"BUNNY HOP x{self.bhop_chain}"
+            elif self.gravity() == GRAVITY:
+                # starts as the tap hop; still held after TAP_TIME it
+                # turns into the full jump (see update). Inside gravity and
+                # wind zones jumps work as they always did.
+                self.vy = -launch_speed(TAP_HOP, GRAVITY, DT)
+                self.hop_t = TAP_TIME
+                self.hop_base = self.rect.bottom
+                self.hop_lock = False
+                self.jump_cut_ok = False
             else:
                 self.vy = -JUMP_V
                 self.jump_cut_ok = True
@@ -496,6 +546,8 @@ class Player:
             self.vy = max(self.vy, 0)  # can't stand up: cancel the jump
             return
         self.dash_t = 0.0
+        if name:
+            self.cancel_hop()          # any other jump replaces a hop
         self.jump_buf = self.coyote = self.wall_coyote = 0.0
         self.sling_t = self.pound_t = self.rico_t = self.land_t = 0.0
         self.on_ground = False
@@ -534,6 +586,7 @@ class Player:
                 elif self.vy < 0:
                     self.rect.top = s.bottom
                     self.hit_ceiling()
+                    self.cancel_hop()
         self.on_ground = (self.vy >= 0 and
                           self.collides(self.rect.move(0, 1), solids))
         if self.on_ground and not was_ground:
@@ -636,6 +689,29 @@ class Player:
             self.dash_t = 0.0
             self.trick("CORNER BOOST", 2)
         return True
+
+    def hop_apex(self, solids):
+        """Pins a tapped hop's peak to exactly TAP_HOP above take-off,
+        smoothing out the last fraction of a pixel of fixed-step error."""
+        target = self.hop_base - TAP_HOP
+        if (self.on_ground or self.dashing or self.hanging
+                or self.gravity() != GRAVITY):    # zones change the height
+            self.hop_lock = False
+            return
+        if self.rect.bottom < target:              # went past it: pull back
+            peak = self.rect.copy()
+            peak.bottom = target
+            if not self.collides(peak, solids):
+                self.rect = peak
+            self.vy = max(self.vy, 0.0)
+            self.hop_lock = False
+        elif self.vy >= 0:                          # topped out just short
+            peak = self.rect.copy()
+            peak.bottom = target
+            if self.rect.bottom - target <= 4 and not self.collides(peak, solids):
+                self.rect = peak
+                self.vy = 0.0
+            self.hop_lock = False
 
     def slip_past(self, s, solids):
         """Moving vertically into a block you only clip by a few pixels:

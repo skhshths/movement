@@ -393,6 +393,7 @@ class Run:
         p.dash_t = 0.0
         p.hanging = False
         p.jump_cut_ok = False
+        p.cancel_hop()
         if dy < 0:
             p.stop_slide(solids)
         if dx:
@@ -420,6 +421,7 @@ class Run:
                 p.trick("BOOST")
         elif dy and (sign(p.vy) != dy or abs(p.vy) < v):
             p.vy = dy * v
+            p.cancel_hop()
             if dy < 0:
                 p.on_ground = False
             if "BOOST" not in p.events:

@@ -33,7 +33,8 @@ import pygame
 import net
 from levels import (KINDS, ORDER, PATH_MAX, SIZE_MAX, Obj, Run, draw_objects, dump,
                     level_info_line, load)
-from player import DASH_SPEED, DASH_TIME, GRAVITY, JUMP_V, RUN_SPEED, Input, Player
+from player import (DASH_SPEED, DASH_TIME, FULL_JUMP, GRAVITY, JUMP_V, RUN_SPEED, TAP_HOP, Input,
+                    Player)
 from scenes import Menu, Play, admin_code, draw_level_hud, hovered, level_camera
 from ui import (DIM, GOLD, GREEN, INK, PANEL, RED, TEXT, TextBox, button, draw_panel, draw_sky,
                 fmt_time, shade_screen, tint_rect)
@@ -957,9 +958,15 @@ class Editor:
                                           by - JUMP_V * t + GRAVITY * t * t / 2))
             for p in pts[::2]:
                 pygame.draw.circle(s, mix(REF, INK, 0.3), p, 2)
-        top = JUMP_V ** 2 / (2 * GRAVITY)
-        apex = self.screen_rect(bx - pw / 2, by - ph - top, pw, ph)
+        apex = self.screen_rect(bx - pw / 2, by - ph - FULL_JUMP, pw, ph)
         pygame.draw.rect(s, mix(REF, INK, 0.5), apex, 1)
+        # where a quick tap of jump peaks: feet exactly where the head was
+        tap = self.screen_rect(bx - pw / 2, by - ph - TAP_HOP, pw, ph)
+        for x in range(tap.left, tap.right, 4):
+            pygame.draw.line(s, REF, (x, tap.top), (x + 1, tap.top))
+        if z >= 0.75:
+            img = f.small.render("tap", True, REF)
+            s.blit(img, img.get_rect(midleft=(tap.right + 4, tap.top)))
         reach = DASH_SPEED * DASH_TIME
         cx, cy = bx, by - ph / 2
         for a in range(8):
