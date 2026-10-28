@@ -103,12 +103,12 @@ function checkLevel(data) {
 }
 
 function checkReplay(text) {
-  // "mask*count,..." with masks 0-127 and at most an hour of steps
+  // "mask*count,..." with masks 0-255 and at most an hour of steps
   if (typeof text !== "string" || text.length > MAX_REPLAY || !REPLAY_FORMAT.test(text)) return null;
   let steps = 0;
   for (const part of text.split(",")) {
     const [mask, count] = part.split("*");
-    if (Number(mask) > 127) return null;
+    if (Number(mask) > 255) return null;
     steps += Number(count || 1);
     if (steps > REPLAY_STEPS) return null;
   }

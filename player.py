@@ -4,8 +4,8 @@ Player movement for VELOCITY: input state, tuning and every maneuver.
 CONTROLS
 --------
   A / D  (or arrows)     run
-  W / S                  aim dashes up / down
-  SPACE  (or K)          jump
+  W / S                  aim dashes up / down (W also jumps)
+  SPACE  (or K, W)       jump
   SHIFT  (or J)          dash in the WASD direction (facing if none held)
   S on ground at speed   slide
   S in the air           fast fall
@@ -67,10 +67,10 @@ MANEUVERS
   Momentum Roll  Land from a fast fall while holding S: your falling speed is
                  converted into a sprinting slide.
 
-  Corner correction: clip the corner of a gap or ceiling by a few pixels and
-  you're nudged around it, so you can thread gaps exactly as wide (or tall)
-  as yourself without being pixel perfect. Landing on a ledge's edge still
-  counts as landing.
+  Corner correction: clip the corner of a gap or ceiling by up to 12 pixels
+  and you're nudged around it, so you can thread gaps exactly as wide (or
+  tall) as yourself without being pixel perfect, even coming in sideways.
+  Landing on the edge of an ordinary ledge still counts as landing.
 """
 import math
 
@@ -150,7 +150,7 @@ EDGE_BOOST = 1.25
 SKATE_SPEED = 1150
 
 CORNER_LIP = 22            # max lip height you can step / boost over
-SLIP = 8                   # corner correction: how far you get nudged into a gap
+SLIP = 12                  # corner correction: how far you get nudged into a gap
 CORNER_POP = 380
 
 ROLL_MIN_VY = 800
@@ -161,6 +161,7 @@ FLIP_X = 1.0               # share of ground speed thrown the other way
 FLIP_Y = 0.75              # share of ground speed thrown upward
 FLIP_BASE_VY = 200
 
+W_FLIP_GRACE = 0.08        # a flip launch still works this soon after a W jump
 SLAM_WINDOW = 0.25         # time after a slingshot to slam back down
 SLAM_REACH = 240           # how far below you the floor can be
 
@@ -195,6 +196,7 @@ class Input:
         self.left = self.right = self.up = self.down = False
         self.jump_held = False
         self.jump_pressed = False
+        self.jump_w = False        # this jump press came only from W (the up key)
         self.dash_pressed = False
         self.interact_pressed = False
 
@@ -204,7 +206,7 @@ class Input:
         self.right = k[pygame.K_d] or k[pygame.K_RIGHT]
         self.up = k[pygame.K_w] or k[pygame.K_UP]
         self.down = k[pygame.K_s] or k[pygame.K_DOWN]
-        self.jump_held = k[pygame.K_SPACE] or k[pygame.K_k]
+        self.jump_held = k[pygame.K_SPACE] or k[pygame.K_k] or k[pygame.K_w]
 
 
 # ---------------------------------------------------------------- player ---
@@ -246,6 +248,8 @@ class Player:
         self.rico_speed = 0.0
         self.jump_cut_ok = False
         self.cancel_hop()
+        self.w_jump_t = 0.0
+        self.ground_jump_t = 0.0   # just jumped off the ground (any ground jump)
         self.bhop_chain = 0
         self.events = []
         self.shake = 0.0
@@ -319,7 +323,7 @@ class Player:
         self.prev = (self.rect.x, self.rect.y)
         for name in ("coyote", "wall_coyote", "jump_buf", "sling_t",
                      "pound_t", "rico_t", "regrab_t", "wrap_t", "slam_t",
-                     "air_lock_t"):
+                     "air_lock_t", "w_jump_t", "ground_jump_t"):
             setattr(self, name, max(0.0, getattr(self, name) - dt))
         self.shake = max(0.0, self.shake - SHAKE_DECAY * dt)
         if self.land_t > 0:
@@ -327,8 +331,12 @@ class Player:
             if self.land_t <= 0 and self.on_ground:
                 self.bhop_chain = 0
 
-        if inp.jump_pressed:
+        # W both jumps and aims dashes up: pressed together with dash it
+        # only aims, so up-dashes from the ground still work
+        w_only = getattr(inp, "jump_w", False)
+        if inp.jump_pressed and not (w_only and inp.dash_pressed):
             self.jump_buf = JUMP_BUFFER
+            self.w_jump_t = W_FLIP_GRACE if w_only else 0.0
         mx = inp.right - inp.left
         my = inp.down - inp.up
         self.mx = mx
@@ -356,7 +364,9 @@ class Player:
                 dx = self.facing
             if dy < 0 or not self.on_ground or dx == 0:
                 self.stop_slide(solids)
-            if (self.on_ground and dy < 0 and dx and dx == -sign(self.vx)
+            # (just after a W jump still counts as the ground for a flip)
+            grounded = self.on_ground or (self.w_jump_t > 0 and self.ground_jump_t > 0)
+            if (grounded and dy < 0 and dx and dx == -sign(self.vx)
                     and abs(self.vx) >= FLIP_MIN_SPEED):
                 self.flip_launch(dx, solids)
             else:
@@ -503,6 +513,7 @@ class Player:
             self.dashes = MAX_DASHES
             name, shake = "DASH HOP", 3
         elif grounded:
+            self.ground_jump_t = W_FLIP_GRACE
             if self.sliding:
                 d = sign(self.vx) or self.facing
                 spd = abs(self.vx)
@@ -600,6 +611,7 @@ class Player:
         self.vx = d * spd * FLIP_X
         self.vy = -(FLIP_BASE_VY + spd * FLIP_Y)
         self.dashes -= 1
+        self.cancel_hop()
         self.facing = d
         self.on_ground = False
         self.jump_cut_ok = False
@@ -667,6 +679,9 @@ class Player:
                                  self.WIDTH, self.H_STAND)
             if self.collides(hang, solids) or self.collides(stand, solids):
                 continue
+            # no grabbing the edge of a gap your own width: you're dropping in
+            if self.collides(hang.move(-self.wall * SLIP, 0), solids):
+                continue
             self.rect = hang
             self.hanging = True
             self.hang_dir = self.wall
@@ -679,6 +694,8 @@ class Player:
         lip = self.rect.bottom - s.top
         if not self.vx or not 0 < lip <= CORNER_LIP:
             return False
+        if self.vy > 0 and not self.on_ground and self.into_gap(s, lip, solids):
+            return False             # falling into a gap your size: drop in, don't step over it
         stepped = self.rect.copy()
         stepped.bottom = s.top
         if self.collides(stepped, solids):
@@ -689,6 +706,20 @@ class Player:
             self.dash_t = 0.0
             self.trick("CORNER BOOST", 2)
         return True
+
+    def into_gap(self, s, lip, solids):
+        """Moving sideways while falling, you've clipped the top corner of
+        block s. True when it's the far side of a gap you fit down: open
+        below, with a wall on the other side close by."""
+        d = sign(self.vx)
+        flush = self.rect.copy()
+        if d > 0:
+            flush.right = s.left
+        else:
+            flush.left = s.right
+        below = flush.move(0, lip + 1)
+        return (not self.collides(flush, solids) and not self.collides(below, solids)
+                and self.collides(below.move(-d * SLIP, 0), solids))
 
     def hop_apex(self, solids):
         """Pins a tapped hop's peak to exactly TAP_HOP above take-off,

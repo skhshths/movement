@@ -69,8 +69,8 @@ nothing to set up by hand.
 | Key | Action |
 |---|---|
 | A / D (or arrows) | run |
-| W / S | aim dashes up / down |
-| Space (or K) | jump |
+| W / S | aim dashes up / down (W also jumps; with dash it only aims) |
+| Space (or K, W) | jump: a quick tap hops exactly the player's height |
 | Shift (or J) | dash in the held direction |
 | S | slide on the ground, fast fall in the air |
 | E (or Enter) | talk / advance dialogue |

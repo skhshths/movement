@@ -728,6 +728,9 @@ class Editor:
         inp = self.app.inp
         ti = self.test_inp
         # presses are latched so slow motion and pausing don't drop them
+        if inp.jump_pressed:
+            # a W-only press stays W-only unless another jump key joins it
+            ti.jump_w = inp.jump_w if not ti.jump_pressed else ti.jump_w and inp.jump_w
         ti.jump_pressed |= inp.jump_pressed
         ti.dash_pressed |= inp.dash_pressed
         for name in ("left", "right", "up", "down", "jump_held"):
@@ -744,7 +747,7 @@ class Editor:
         if not self.test.finished:
             self.test.step(dt, ti)
             self.path.append(self.test.player.rect.center)
-        ti.jump_pressed = ti.dash_pressed = False
+        ti.jump_pressed = ti.dash_pressed = ti.jump_w = False
 
     # -- drawing ----------------------------------------------------------------
     def draw(self, s):

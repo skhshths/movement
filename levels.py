@@ -751,7 +751,8 @@ def level_info_line(o):
 
 
 # ---------------------------------------------------------------- replays ---
-REPLAY_KEYS = ("left", "right", "up", "down", "jump_held", "jump_pressed", "dash_pressed")
+REPLAY_KEYS = ("left", "right", "up", "down", "jump_held", "jump_pressed", "dash_pressed",
+               "jump_w")
 
 
 def input_mask(inp):
@@ -787,7 +788,7 @@ def decode_replay(text):
             m, n = int(m), int(n or 1)
         except ValueError:
             continue
-        if not 0 <= m < 128 or n < 1:
+        if not 0 <= m < 256 or n < 1:
             continue
         n = min(n, REPLAY_STEPS - len(masks))
         masks.extend([m] * n)

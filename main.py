@@ -141,6 +141,7 @@ class App:
             # the browser paces frames to the display itself; capping the
             # clock there makes frames miss vsync and halves the frame rate
             acc += min(self.clock.tick(0 if WEB else FPS) / 1000, 0.05)
+            real_jump = False        # a jump key other than W this frame
             for e in pygame.event.get():
                 if e.type == pygame.QUIT:
                     return
@@ -150,6 +151,12 @@ class App:
                             frame=16.0, step=0.0, draw=0.0, flip=0.0, last=time.perf_counter())
                     if e.key in (pygame.K_SPACE, pygame.K_k):
                         self.inp.jump_pressed = True
+                        self.inp.jump_w = False
+                        real_jump = True
+                    if e.key == pygame.K_w:
+                        # W jumps too, but also aims dashes (see Player.update)
+                        self.inp.jump_pressed = True
+                        self.inp.jump_w = not real_jump
                     if e.key in (pygame.K_LSHIFT, pygame.K_RSHIFT, pygame.K_j):
                         self.inp.dash_pressed = True
                     if e.key in (pygame.K_e, pygame.K_RETURN):
@@ -164,7 +171,7 @@ class App:
             while acc >= DT:
                 self.scene.step(DT)
                 self.inp.jump_pressed = self.inp.dash_pressed = False
-                self.inp.interact_pressed = False
+                self.inp.jump_w = self.inp.interact_pressed = False
                 acc -= DT
             self.alpha = acc / DT        # how far into the next physics step we are
             t1 = time.perf_counter()
