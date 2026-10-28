@@ -260,6 +260,7 @@ class Player:
         self.on_ice = False
         self.dash_lock = False
         self.gap_sides = ()        # hazards that count as the side of a gap
+        self.ground_y = self.rect.bottom
 
 
     @property
@@ -440,6 +441,7 @@ class Player:
 
         if self.on_ground:
             self.coyote = COYOTE
+            self.ground_y = self.rect.bottom     # height you last stood at
             self.hanging = False
             if self.vy >= 0:
                 self.cancel_hop()
@@ -686,8 +688,11 @@ class Player:
                                  self.WIDTH, self.H_STAND)
             if self.collides(hang, solids) or self.collides(stand, solids):
                 continue
-            # no grabbing the edge of a gap your own width: you're dropping in
-            if self.gap_side(hang.move(-self.wall * SLIP, 0), solids):
+            # dropping into a gap your own width from ground at this same
+            # level: you're going down it, so don't catch on its far edge.
+            # Ledges at any other height you can grab as usual.
+            if (abs(s.top - self.ground_y) <= 2
+                    and self.gap_side(hang.move(-self.wall * SLIP, 0), solids)):
                 continue
             self.rect = hang
             self.hanging = True
