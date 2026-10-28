@@ -259,6 +259,8 @@ class Player:
         self.lift = 0.0            # upward wind, px/s^2
         self.on_ice = False
         self.dash_lock = False
+        self.gap_sides = ()        # hazards that count as the side of a gap
+
 
     @property
     def dashing(self):
@@ -274,6 +276,11 @@ class Player:
     # -- helpers ------------------------------------------------------------
     def collides(self, rect, solids):
         return any(rect.colliderect(s) for s in solids)
+
+    def gap_side(self, rect, solids):
+        """Is something (a block, or a hazard like a kill brick) at rect?
+        Decides whether you're beside a gap you should be nudged into."""
+        return self.collides(rect, solids) or self.collides(rect, self.gap_sides)
 
     def start_slide(self):
         if self.sliding:
@@ -680,7 +687,7 @@ class Player:
             if self.collides(hang, solids) or self.collides(stand, solids):
                 continue
             # no grabbing the edge of a gap your own width: you're dropping in
-            if self.collides(hang.move(-self.wall * SLIP, 0), solids):
+            if self.gap_side(hang.move(-self.wall * SLIP, 0), solids):
                 continue
             self.rect = hang
             self.hanging = True
@@ -719,7 +726,7 @@ class Player:
             flush.left = s.right
         below = flush.move(0, lip + 1)
         return (not self.collides(flush, solids) and not self.collides(below, solids)
-                and self.collides(below.move(-d * SLIP, 0), solids))
+                and self.gap_side(below.move(-d * SLIP, 0), solids))
 
     def hop_apex(self, solids):
         """Pins a tapped hop's peak to exactly TAP_HOP above take-off,
@@ -759,7 +766,14 @@ class Player:
         moved = r.move(shift, 0)
         if self.collides(moved, solids):
             return False
-        if self.vy > 0 and not self.collides(moved.move(sign(shift) * SLIP, 0), solids):
+        # standing and still walking toward the gap: no nudge yet, so you can
+        # let go anywhere over it (the far side may be something deadly)
+        if self.vy > 0 and self.on_ground and self.mx == sign(shift) and abs(shift) >= 1:
+            return False
+        # falling: slip off only into a narrow gap, or off a foothold too thin
+        # to see (running leaves you on half pixels)
+        if (self.vy > 0 and abs(shift) >= 1
+                and not self.gap_side(moved.move(sign(shift) * SLIP, 0), solids)):
             return False
         self.rect = moved
         return True

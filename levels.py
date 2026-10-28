@@ -339,6 +339,8 @@ class Run:
                 ice.append(r)
         foot = pr.move(0, 1)
         p.on_ice = p.on_ground and any(foot.colliderect(r) for r in ice)
+        # kill bricks bound gaps too, for nudging you into them
+        p.gap_sides = [objs[i].rect for i in near if objs[i].t == "kill"]
 
         p.update(dt, inp, solids)
 
