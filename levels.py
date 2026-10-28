@@ -16,7 +16,7 @@ import random
 
 import pygame
 
-from player import AIR_LOCK, MAX_DASHES, Player, sign
+from player import AIR_LOCK, MAX_DASHES, SLIP, Player, sign
 from ui import GOLD, INK, pixel_rect, tint_rect, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, RED, TEXT, fmt_time
 from world import PALETTES, mix, shade
 
@@ -345,6 +345,7 @@ class Run:
         p.update(dt, inp, solids)
 
         # touching things
+        self.thread_gap(near, solids)
         pr = p.rect
         for i in near:
             o = objs[i]
@@ -387,6 +388,40 @@ class Run:
             self.die()
             return
         self.effects(dt)
+
+    def thread_gap(self, near, solids):
+        """Clipping a kill brick by a few pixels while threading a gap
+        (something solid or deadly close on the other side) nudges you into
+        the gap instead of killing you, like corner correction does for
+        walls. Kill bricks out in the open stay exactly as deadly."""
+        p = self.player
+        kills = [self.objs[i].rect for i in near if self.objs[i].t == "kill"]
+        blocked = list(solids) + kills
+        for _ in range(3):
+            r = p.rect
+            hit = next((k for k in kills if r.colliderect(k)), None)
+            if hit is None:
+                return
+            # only ever sideways to how you're moving: pushing you back the
+            # way you came would turn the kill brick into a wall
+            if abs(p.vy) >= abs(p.vx):
+                ways = [(hit.left - r.right, 0), (hit.right - r.left, 0)]
+            else:
+                ways = [(0, hit.top - r.bottom), (0, hit.bottom - r.top)]
+            for dx, dy in sorted(ways, key=lambda v: abs(v[0]) + abs(v[1])):
+                if abs(dx) + abs(dy) > SLIP:
+                    break
+                moved = r.move(dx, dy)
+                if p.collides(moved, blocked):
+                    continue
+                beyond = moved.move(sign(dx) * SLIP, sign(dy) * SLIP)
+                if p.collides(beyond, blocked):       # a gap: nudge in
+                    p.rect = moved
+                    break
+            else:
+                return
+            if p.rect is r:
+                return
 
     def launch(self, o, solids):
         p = self.player
