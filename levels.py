@@ -224,6 +224,8 @@ class Run:
         self.death_y = bottom + FALL_MARGIN
         self.grid = {}
         self.saws = []
+        self.changing = [i for i, o in enumerate(self.objs)
+                         if o.t in ("blinkA", "blinkB", "crumble", "orb")]
         for i, o in enumerate(self.objs):
             if o.t == "saw":
                 self.saws.append(o)
@@ -256,6 +258,19 @@ class Run:
         self.trail = []
         self.particles = []
         self.was_dashing = False
+        self.sync_blinks(int(self.clock / BLINK_TIME) % 2 == 0, self.player.rect)
+
+    def sync_blinks(self, blink_a, pr):
+        """Blink blocks on or off for the current phase; one that should come
+        back while you're inside it waits until you've left."""
+        for i in self.changing:
+            t = self.objs[i].t
+            if t not in ("blinkA", "blinkB"):
+                continue
+            if blink_a != (t == "blinkA"):
+                self.on[i] = False
+            elif not self.on[i] and not pr.colliderect(self.objs[i].rect):
+                self.on[i] = True
 
     def die(self):
         """Back to the last checkpoint, frozen for a moment, with saws and
@@ -264,9 +279,9 @@ class Run:
         self.deaths += 1
         self.burst(self.player.rect.center, RED, 24, 500)
         parts = self.particles
+        self.clock = 0.0
         self.reset_world()
         self.particles = parts
-        self.clock = 0.0
         self.freeze_t = DEATH_FREEZE
 
     def near(self, rect):
@@ -307,6 +322,24 @@ class Run:
         sweep = pr.inflate(abs(p.vx) * dt * 2 + 4, abs(p.vy) * dt * 2 + 4)
         solids = []
         ice = []
+        # blink, crumble and orb blocks keep time everywhere, not just near you
+        for i in self.changing:
+            o = objs[i]
+            t = o.t
+            if t in ("crumble", "orb"):
+                if self.timer[i] > 0:
+                    self.timer[i] -= dt
+                    if self.timer[i] <= 0:
+                        r = o.rect
+                        if self.on[i]:          # crumble finished falling
+                            self.on[i] = False
+                            self.timer[i] = CRUMBLE_BACK
+                            self.burst(r.center, o.kind.colour, 10, 200)
+                        elif not pr.colliderect(r):
+                            self.on[i] = True
+                        else:
+                            self.timer[i] = 0.05    # wait until you've left
+        self.sync_blinks(blink_a, pr)
         for i in near:
             o = objs[i]
             t = o.t
@@ -322,25 +355,7 @@ class Run:
                         p.push += dx * WIND_PUSH[o.p - 1]
                         p.lift -= dy * WIND_LIFT[o.p - 1]
                 continue
-            if t in ("crumble", "orb"):
-                if self.timer[i] > 0:
-                    self.timer[i] -= dt
-                    if self.timer[i] <= 0:
-                        if self.on[i]:          # crumble finished falling
-                            self.on[i] = False
-                            self.timer[i] = CRUMBLE_BACK
-                            self.burst(r.center, o.kind.colour, 10, 200)
-                        elif not pr.colliderect(r):
-                            self.on[i] = True
-                        else:
-                            self.timer[i] = 0.05    # wait until you've left
-            elif t in ("blinkA", "blinkB"):
-                want = blink_a == (t == "blinkA")
-                if not want:
-                    self.on[i] = False
-                elif not self.on[i] and not pr.colliderect(r):
-                    self.on[i] = True
-            elif t == "gate" and self.on[i]:
+            if t == "gate" and self.on[i]:
                 if spd >= o.power() and sweep.colliderect(r):
                     self.on[i] = False
                     p.trick("GATE BREAK", 4)
