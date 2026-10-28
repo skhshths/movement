@@ -37,6 +37,7 @@ BLINK_TIME = 1.0          # blink blocks swap this often
 CRUMBLE_DELAY = 0.35      # crumble blocks fall this long after you touch them
 CRUMBLE_BACK = 2.5
 ORB_BACK = 2.0
+DEATH_FREEZE = 0.5        # after dying you wait this long at the respawn point
 FALL_MARGIN = 1200        # fall this far below the lowest block and you die
 
 CELL = 256
@@ -237,6 +238,7 @@ class Run:
 
     def restart(self):
         self.clock = 0.0            # blinks and saws restart too, so replays match
+        self.freeze_t = 0.0
         self.player.spawn = self.start
         self.checkpoint = None
         self.time = 0.0
@@ -256,11 +258,16 @@ class Run:
         self.was_dashing = False
 
     def die(self):
+        """Back to the last checkpoint, frozen for a moment, with saws and
+        blink blocks back at their starting positions, so nothing can kill
+        you over and over as you respawn."""
         self.deaths += 1
         self.burst(self.player.rect.center, RED, 24, 500)
         parts = self.particles
         self.reset_world()
         self.particles = parts
+        self.clock = 0.0
+        self.freeze_t = DEATH_FREEZE
 
     def near(self, rect):
         seen = set()
@@ -273,8 +280,16 @@ class Run:
 
     # -- one physics step ------------------------------------------------------
     def step(self, dt, inp):
-        self.clock += dt
         p = self.player
+        if self.freeze_t > 0:
+            # respawning: the player and every moving part wait, the timer runs
+            self.freeze_t -= dt
+            if self.started and not self.finished:
+                self.time += dt
+            p.prev = (p.rect.x, p.rect.y)
+            self.effects(dt)
+            return
+        self.clock += dt
         if not self.finished and not self.started and (
                 inp.left or inp.right or inp.up or inp.down or inp.jump_pressed
                 or inp.dash_pressed):
@@ -516,6 +531,8 @@ class Run:
             pygame.draw.rect(s, mix(bg, col, life / mx),
                              (x - cam.x - size / 2, y - cam.y - size / 2, size, size))
         pr = pixel_rect(p.lerp_rect(alpha), cam)
+        if self.freeze_t > 0 and int(self.freeze_t * 16) % 2:
+            return                      # blink while respawning
         if hitboxes:
             pygame.draw.rect(s, self.player_colour(), pr)
             pygame.draw.rect(s, (60, 255, 120), pr, 1)
