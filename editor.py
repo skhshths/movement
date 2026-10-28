@@ -20,6 +20,7 @@ KEYS
   CTRL+D         duplicate              DEL     delete selection
   CTRL+Z / Y     undo / redo            HOME    jump to the start
   ENTER          playtest               M       spawn at start / at cursor
+  Text block     select it and press Text (or double-place) to write a message
   ESC            deselect, then leave
 In a playtest: ESC back to editing, F freeze and edit with a hologram of where
 you were, R restart, H hitboxes, TAB slow motion, COMMA pause, PERIOD step one
@@ -32,7 +33,7 @@ import pygame
 
 import net
 import ratings
-from levels import (KINDS, ORDER, PATH_MAX, SIZE_MAX, Obj, Run, draw_objects, dump,
+from levels import (KINDS, ORDER, PATH_MAX, SIZE_MAX, TEXT_MAX, Obj, Run, draw_objects, dump,
                     level_info_line, load)
 from player import (DASH_SPEED, DASH_TIME, FULL_JUMP, GRAVITY, JUMP_V, RUN_SPEED, TAP_HOP, Input,
                     Player)
@@ -212,6 +213,27 @@ class Editor:
             self.objs = [o for o in self.objs if o.t != "start"]
         self.objs.append(Obj(kind, rect.x, rect.y, rect.w, rect.h, d, 3 if k.power else 1))
         self.sel = {len(self.objs) - 1}
+        if kind == "text":
+            self.open_text(len(self.objs) - 1)
+
+    def open_text(self, i):
+        """Write a text block's message."""
+        self.modal = dict(stage="text", i=i, box=TextBox(self.objs[i].text or "", TEXT_MAX),
+                          req=None)
+
+    def text_event(self, e):
+        m = self.modal
+        if e.type == pygame.KEYDOWN and e.key == pygame.K_RETURN:
+            o = self.objs[m["i"]]
+            text = m["box"].value.strip()
+            if text != o.text:
+                self.push_undo()
+                o.text = text
+            self.modal = None
+        elif e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE:
+            self.modal = None
+        else:
+            m["box"].key(e)
 
     def delete(self, idxs):
         if not idxs:
@@ -322,6 +344,9 @@ class Editor:
     def selection_button(self, name):
         if name == "path":
             self.start_path()
+            return
+        if name == "text":
+            self.open_text(next(iter(self.sel)))
             return
         if name == "copy":
             self.copy()
@@ -655,6 +680,9 @@ class Editor:
         m = self.modal
         if e.type == pygame.MOUSEMOTION:
             self.mouse = e.pos
+        if m["stage"] == "text":
+            self.text_event(e)
+            return
         if m["stage"] == "difficulty" and not m["result"]:
             # second step: how hard is it? clicking a difficulty publishes
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and not m["req"]:
@@ -907,6 +935,8 @@ class Editor:
         names = (("copy", "Copy"), ("cut", "Cut"), ("duplicate", "Duplicate"), ("delete", "Delete"))
         if len(self.sel) == 1 and self.objs[next(iter(self.sel))].t == "saw":
             names += (("path", "Path"),)
+        if len(self.sel) == 1 and self.objs[next(iter(self.sel))].t == "text":
+            names += (("text", "Text"),)
         total = len(names) * (bw + gap)
         x = max(SIDEBAR_W + 8, min(x, w - total - 8))
         y = max(TOPBAR_H + 8, min(y - bh - 10, h - BOTTOMBAR_H - bh - 40))
@@ -1096,6 +1126,14 @@ class Editor:
         w, h = s.get_size()
         m = self.modal
         shade_screen(s, 170)
+        if m["stage"] == "text":
+            box = pygame.Rect(0, 0, min(900, w - 80), 70)
+            box.center = (w / 2, h / 2)
+            m["box"].draw(s, f, box, self.t, "Message for players", f.font)
+            n = len(m["box"].value)
+            hint = f.font.render(f"ENTER save    ESC cancel    {n}/{TEXT_MAX}", True, DIM)
+            s.blit(hint, hint.get_rect(midtop=(w / 2, box.bottom + 12)))
+            return
         if m["stage"] == "difficulty" and not m["result"]:
             self.draw_difficulty_step(s, f, m)
             return

@@ -17,7 +17,7 @@ import random
 import pygame
 
 from player import AIR_LOCK, MAX_DASHES, SLIP, Player, sign
-from ui import GOLD, INK, pixel_rect, tint_rect, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, RED, TEXT, fmt_time
+from ui import DIM, GOLD, INK, pixel_rect, tint_rect, PLAYER_DASH, PLAYER_EMPTY, PLAYER_READY, RED, TEXT, fmt_time
 from world import PALETTES, mix, shade
 
 DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]
@@ -33,6 +33,7 @@ SAW_RANGE = [64, 128, 192, 256, 384]
 SAW_SPEED = 220
 SAW_PATH_SPEED = [120, 180, 240, 320, 420]   # saws on a custom path, by power
 PATH_MAX = 32
+TEXT_MAX = 200            # characters in a text block
 BLINK_TIME = 1.0          # blink blocks swap this often
 CRUMBLE_DELAY = 0.35      # crumble blocks fall this long after you touch them
 CRUMBLE_BACK = 2.5
@@ -100,19 +101,24 @@ KINDS = {
                   info="Where you spawn. One per level."),
     "finish": Kind("Finish", "trigger", (48, 64), colour=(255, 255, 255),
                    info="Touch it to clear the level."),
+    "text": Kind("Text", "marker", (256, 64), colour=(255, 236, 170),
+                 info="A message for players. Select it and press Text to write it."),
 }
 ORDER = ["wall", "kill", "bounce", "boost", "ice", "oneway", "crumble", "blinkA",
          "blinkB", "gate", "saw", "orb", "grav", "wind", "nodash", "check", "start",
-         "finish"]
+         "finish", "text"]
 SOLID = {k for k, v in KINDS.items() if v.group == "solid"}
 
 
 class Obj:
-    __slots__ = ("t", "x", "y", "w", "h", "d", "p", "path")
+    __slots__ = ("t", "x", "y", "w", "h", "d", "p", "path", "text")
 
-    def __init__(self, t, x, y, w, h, d=0, p=1, path=None):
+    def __init__(self, t, x, y, w, h, d=0, p=1, path=None, text=None):
         self.t, self.x, self.y, self.w, self.h, self.d, self.p = t, x, y, w, h, d, p
+        if t == "text" and isinstance(path, str):
+            path, text = None, path         # a text block's 8th item is its text
         self.path = [list(pt) for pt in path] if path else None   # saws only
+        self.text = (text or "") if t == "text" else None
 
     @property
     def rect(self):
@@ -135,6 +141,8 @@ class Obj:
         out = [self.t, self.x, self.y, self.w, self.h, self.d, self.p]
         if self.path:
             out.append([list(pt) for pt in self.path])
+        elif self.text:
+            out.append(self.text)
         return out
 
 
@@ -154,13 +162,15 @@ def load(text):
             if not (abs(x) <= COORD_MAX and abs(y) <= COORD_MAX
                     and 1 <= w <= SIZE_MAX and 1 <= h <= SIZE_MAX):
                 continue
-            path = None
+            path = text = None
+            if len(o) == 8 and t == "text" and isinstance(o[7], str):
+                text = "".join(ch for ch in o[7][:TEXT_MAX] if ch.isprintable())
             if len(o) == 8 and t == "saw" and isinstance(o[7], list):
                 path = [pt for pt in o[7][:PATH_MAX]
                         if isinstance(pt, list) and len(pt) == 2
                         and all(isinstance(v, (int, float)) and abs(v) <= COORD_MAX for v in pt)]
             objs.append(Obj(t, x, y, max(1, w), max(1, h), int(d) % 4,
-                            max(1, min(5, int(p))), path))
+                            max(1, min(5, int(p))), path, text))
     theme = data.get("theme")
     return objs, theme if theme in PALETTES else "lowmarket"
 
@@ -561,6 +571,38 @@ class Run:
 
 
 # --------------------------------------------------------------- drawing ---
+_text_cache = {}
+
+
+def text_image(font, text, width, colour):
+    """A text block's words wrapped to `width`, with a shadow; cached, since
+    it's drawn every frame."""
+    key = (id(font), text, width, colour)
+    img = _text_cache.get(key)
+    if img:
+        return img
+    lines, line = [], ""
+    for word in text.split():
+        trial = f"{line} {word}" if line else word
+        if line and font.size(trial)[0] > width:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        lines.append(line)
+    lh = font.get_height() + 2
+    imgs = [font.render(l, True, colour) for l in lines] or [font.render("", True, colour)]
+    img = pygame.Surface((max(i.get_width() for i in imgs) + 2, lh * len(imgs) + 2), pygame.SRCALPHA)
+    for n, (l, im) in enumerate(zip(lines, imgs)):
+        img.blit(font.render(l, True, INK), (2, n * lh + 2))
+        img.blit(im, (0, n * lh))
+    if len(_text_cache) > 300:
+        _text_cache.clear()
+    _text_cache[key] = img
+    return img
+
+
 def _fill_alpha(s, colour, rect, alpha):
     tint_rect(s, rect, colour, alpha)
 
@@ -737,6 +779,14 @@ def draw_objects(s, cam, zoom, objs, theme, clock, run=None, hitboxes=False,
                     if fonts:
                         img = fonts.font.render("S", True, col)
                         s.blit(img, img.get_rect(center=rr.center))
+            elif t == "text":
+                if run is None:
+                    pygame.draw.rect(s, shade(col, 0.6), rr, 1)
+                if fonts and zoom >= 0.4:
+                    font = fonts.font if zoom >= 0.75 else fonts.small
+                    img = text_image(font, o.text or ("" if run else "(empty: select it and press Text)"),
+                                     max(40, rr.w - 12), col if o.text else DIM)
+                    s.blit(img, img.get_rect(center=rr.center))
             elif t == "finish":
                 sq = max(4, int(8 * zoom))
                 for yy in _span(rr.top, rr.bottom, sq, screen.top, screen.bottom):

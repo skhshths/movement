@@ -43,9 +43,10 @@ const REPLAY_FORMAT = /^\d{1,3}(\*\d{1,7})?(,\d{1,3}(\*\d{1,7})?)*$/;
 const COORD_MAX = 1_000_000;      // must match levels.py
 const SIZE_MAX = 10_000;
 const PATH_MAX = 32;              // saw path points
+const TEXT_MAX = 200;             // characters in a text block
 const RATING_MAX = 40;
 const KINDS = new Set(["wall", "kill", "bounce", "boost", "ice", "oneway", "crumble", "blinkA",
-  "blinkB", "gate", "saw", "orb", "grav", "wind", "nodash", "check", "start", "finish"]);
+  "blinkB", "gate", "saw", "orb", "grav", "wind", "nodash", "check", "start", "finish", "text"]);
 // what any listing or level fetch may show; token and replay stay private
 const PUBLIC = `id, name, author, created, updated, verified, verified_by, verified_at, plays,
   clears, best, best_by, rating, proposed, sugg_sum, sugg_count,
@@ -91,7 +92,9 @@ function checkLevel(data) {
     const [, x, y, w, h] = o;
     if (Math.abs(x) > COORD_MAX || Math.abs(y) > COORD_MAX ||
         w < 1 || h < 1 || w > SIZE_MAX || h > SIZE_MAX) return "object out of range";
-    if (o.length === 8) {
+    if (o.length === 8 && o[0] === "text") {
+      if (typeof o[7] !== "string" || o[7].length > TEXT_MAX) return "bad text block";
+    } else if (o.length === 8) {
       const path = o[7];
       if (o[0] !== "saw" || !Array.isArray(path) || path.length > PATH_MAX ||
           !path.every((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite) &&

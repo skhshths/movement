@@ -225,6 +225,9 @@ class TextBox:
         pygame.draw.rect(s, GOLD, rect, 2, border_radius=12)
         font = font or fonts.big
         img = font.render("*" * len(self.value) if self.mask else self.value, True, TEXT)
+        room = rect.w - 44
+        if img.get_width() > room:          # long text: show its end
+            img = img.subsurface((img.get_width() - room, 0, room, img.get_height()))
         r = img.get_rect(midleft=(rect.x + 18, rect.centery))
         s.blit(img, r)
         if int(time * 2.5) % 2 == 0:

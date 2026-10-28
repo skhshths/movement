@@ -12,7 +12,8 @@ It opens on a menu:
 - **Level Creator**: build hard platforming and speed levels from walls,
   kill bricks, bounce pads, speed strips, ice, one-way platforms, crumbling
   and blinking blocks, speed gates, saws, dash orbs, gravity, wind and
-  no-dash zones, checkpoints and a finish. Toggle exact hitboxes, size gaps
+  no-dash zones, checkpoints, text blocks with messages for players, and a
+  finish. Toggle exact hitboxes, size gaps
   against a ghost of the player's hitbox (with jump arcs and dash reach),
   measure distances in frames, and playtest instantly with slow motion and
   frame stepping. Press **Keys** in the editor for every shortcut.
@@ -73,8 +74,8 @@ nothing to set up by hand.
 | Key | Action |
 |---|---|
 | A / D (or arrows) | run |
-| W / S | aim dashes up / down (W also jumps; with dash it only aims) |
-| Space (or K, W) | jump: a quick tap hops exactly the player's height |
+| W / S (or up / down) | aim dashes up / down (W and up also jump; with dash they only aim) |
+| Space (or K, W, up) | jump: a quick tap hops exactly the player's height |
 | Shift (or J) | dash in the held direction |
 | S | slide on the ground, fast fall in the air |
 | E (or Enter) | talk / advance dialogue |

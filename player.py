@@ -4,8 +4,8 @@ Player movement for VELOCITY: input state, tuning and every maneuver.
 CONTROLS
 --------
   A / D  (or arrows)     run
-  W / S                  aim dashes up / down (W also jumps)
-  SPACE  (or K, W)       jump
+  W / S                  aim dashes up / down (W and up also jump)
+  SPACE  (or K, W, up)       jump
   SHIFT  (or J)          dash in the WASD direction (facing if none held)
   S on ground at speed   slide
   S in the air           fast fall
@@ -206,7 +206,7 @@ class Input:
         self.right = k[pygame.K_d] or k[pygame.K_RIGHT]
         self.up = k[pygame.K_w] or k[pygame.K_UP]
         self.down = k[pygame.K_s] or k[pygame.K_DOWN]
-        self.jump_held = k[pygame.K_SPACE] or k[pygame.K_k] or k[pygame.K_w]
+        self.jump_held = k[pygame.K_SPACE] or k[pygame.K_k] or self.up
 
 
 # ---------------------------------------------------------------- player ---

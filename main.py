@@ -153,8 +153,8 @@ class App:
                         self.inp.jump_pressed = True
                         self.inp.jump_w = False
                         real_jump = True
-                    if e.key == pygame.K_w:
-                        # W jumps too, but also aims dashes (see Player.update)
+                    if e.key in (pygame.K_w, pygame.K_UP):
+                        # W and the up arrow jump too, but also aims dashes (see Player.update)
                         self.inp.jump_pressed = True
                         self.inp.jump_w = not real_jump
                     if e.key in (pygame.K_LSHIFT, pygame.K_RSHIFT, pygame.K_j):
