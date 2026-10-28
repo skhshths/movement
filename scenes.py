@@ -83,6 +83,8 @@ class Menu:
         self.code = None         # admin code box, after naming yourself admin
         self.code_req = None
         self.code_error = None
+        self.blank_error = None  # the browser blocked the about:blank pop-up
+        self.blank = net.can_open_blank()
 
     def items(self):
         name = self.app.name or "Anonymous"
@@ -91,6 +93,8 @@ class Menu:
         items = [("story", "Story Mode"), ("create", "Level Creator"),
                  ("id", "Play Level by ID"), ("browse", "Browse Levels"),
                  ("name", f"Name: {name}")]
+        if self.blank:
+            items.append(("blank", "Open in about:blank"))
         if not WEB:
             items.append(("quit", "Quit"))
         return items
@@ -108,6 +112,9 @@ class Menu:
             app.go(Browse(app))
         elif key == "name":
             self.naming = TextBox(app.name, 24)
+        elif key == "blank":
+            blocked = net.open_blank() != "ok"
+            self.blank_error = "Allow pop-ups for this site, then try again" if blocked else None
         elif key == "quit":
             app.running = False
 
@@ -196,6 +203,9 @@ class Menu:
             rect = pygame.Rect(0, 0, bw, bh)
             rect.midtop = (w / 2, top + i * (bh + gap))
             self.rects.append(button(s, f, rect, label, i == self.sel, pal["accent"]))
+        if self.blank_error:
+            img = f.font.render(self.blank_error, True, RED)
+            s.blit(img, img.get_rect(midtop=(w / 2, self.rects[-1].bottom + 14)))
         if self.naming:
             shade_screen(s, 160)
             box = pygame.Rect(0, 0, 520, 70)

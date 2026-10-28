@@ -149,3 +149,40 @@ def save(key, value):
             json.dump(data, f)
     except OSError:
         pass
+
+
+# ------------------------------------------------------------ about:blank --
+_BLANK_JS = r"""(function () {
+  var w = window.open("about:blank", "_blank");
+  if (!w) return "blocked";
+  var d = w.document;
+  d.title = "VELOCITY";
+  var icon = d.createElement("link");
+  icon.rel = "icon";
+  icon.href = new URL("favicon.png", location.href).href;
+  d.head.appendChild(icon);
+  d.body.style.cssText = "margin:0;height:100vh;overflow:hidden;background:#000";
+  var f = d.createElement("iframe");
+  f.src = location.href;
+  f.allow = "fullscreen; autoplay; gamepad; clipboard-read; clipboard-write";
+  f.style.cssText = "border:0;width:100%;height:100%;display:block";
+  d.body.appendChild(f);
+  f.focus();
+  return "ok";
+})()"""
+
+
+def can_open_blank():
+    """In the browser, and not already inside an about:blank tab."""
+    if not WEB:
+        return False
+    import platform
+    return bool(platform.window.eval("window.top === window.self"))
+
+
+def open_blank():
+    """Opens the game in a new tab whose address is about:blank: the tab
+    holds a full-size frame of this site. Returns "ok" or "blocked" (the
+    browser stopped the pop-up)."""
+    import platform
+    return str(platform.window.eval(_BLANK_JS))

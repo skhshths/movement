@@ -20,6 +20,8 @@ It opens on a menu:
 - **Browse Levels**: the public list. A level only appears here once someone
   has beaten it, and it shows its difficulty, clears and the record time. The
   **Unverified** tab lists levels nobody has beaten yet.
+- **Open in about:blank** (browser only): opens the game in a new tab whose
+  address bar says about:blank. The browser may ask you to allow pop-ups.
 
 Level names are unique. Publishing from a level you published before (the
 editor remembers, or use **Edit** under Play by ID) updates it in place: same
